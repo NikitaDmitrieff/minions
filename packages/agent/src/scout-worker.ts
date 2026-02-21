@@ -398,8 +398,8 @@ export async function runScoutJob(input: ScoutInput): Promise<void> {
     await supabase.from('branch_events').insert({
       project_id: projectId,
       branch_name: project.default_branch || 'main',
-      event_type: 'scout_run',
-      payload: {
+      event_type: 'scout_finding',
+      event_data: {
         total_findings: allFindings.length,
         new_findings: newFindings.length,
         files_scanned: sampledFiles.length,
@@ -433,14 +433,16 @@ export async function runScoutJob(input: ScoutInput): Promise<void> {
 
     const { score, breakdown } = computeHealthScore(openFindings ?? [])
 
+    const today = new Date().toISOString().split('T')[0]
     const { error: snapError } = await supabase.from('health_snapshots').upsert({
       project_id: projectId,
       score,
       breakdown,
       findings_open: openCount ?? 0,
       findings_addressed: addressedCount ?? 0,
+      snapshot_date: today,
     }, {
-      onConflict: 'project_id,(created_at::date)',
+      onConflict: 'project_id,snapshot_date',
     })
 
     if (snapError) {

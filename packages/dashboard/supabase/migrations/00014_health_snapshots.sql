@@ -8,16 +8,17 @@ CREATE TABLE IF NOT EXISTS feedback_chat.health_snapshots (
   breakdown jsonb NOT NULL DEFAULT '{}',
   findings_open int NOT NULL DEFAULT 0,
   findings_addressed int NOT NULL DEFAULT 0,
+  snapshot_date date NOT NULL DEFAULT CURRENT_DATE,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- Only one snapshot per project per day (prevent duplicate runs)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_health_snapshots_project_day
-  ON feedback_chat.health_snapshots(project_id, (created_at::date));
+  ON feedback_chat.health_snapshots(project_id, snapshot_date);
 
 -- Index for fetching latest snapshot per project
 CREATE INDEX IF NOT EXISTS idx_health_snapshots_project_latest
-  ON feedback_chat.health_snapshots(project_id, created_at DESC);
+  ON feedback_chat.health_snapshots(project_id, snapshot_date DESC);
 
 -- RLS
 ALTER TABLE feedback_chat.health_snapshots ENABLE ROW LEVEL SECURITY;

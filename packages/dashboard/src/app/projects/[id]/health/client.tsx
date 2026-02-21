@@ -10,11 +10,13 @@ type Props = {
 }
 
 const BREAKDOWN_LABELS: Record<string, string> = {
-  code_quality: 'Code Quality',
-  test_coverage: 'Test Coverage',
-  dep_health: 'Dep Health',
+  bug_risk: 'Bug Risk',
+  tech_debt: 'Tech Debt',
   security: 'Security',
-  docs: 'Documentation',
+  performance: 'Performance',
+  accessibility: 'Accessibility',
+  testing_gap: 'Testing Gap',
+  dx: 'Developer Experience',
 }
 
 function scoreColor(score: number): string {
@@ -128,7 +130,7 @@ export function HealthPageClient({ projectId, snapshots }: Props) {
             </div>
           )}
           <p className="mt-2 text-xs text-dim">
-            {latest.findings_count} findings across {new Date(latest.snapshot_date).toLocaleDateString()}
+            {latest.findings_open} open findings as of {new Date(latest.snapshot_date).toLocaleDateString()}
           </p>
         </div>
 

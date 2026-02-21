@@ -275,7 +275,7 @@ ${review.security_issues ? '\n**Security issues detected** — review flagged po
     project_id: projectId,
     branch_name: branchName,
     event_type: review.verdict === 'approve' ? 'review_approved' : 'review_rejected',
-    payload: {
+    event_data: {
       proposal_id: proposalId,
       pr_number: prNumber,
       head_sha: headSha,

@@ -289,7 +289,7 @@ ${validationResult.errorOutput.slice(-4000)}`
         project_id: projectId,
         branch_name: branchName,
         event_type: 'build_failed',
-        payload: {
+        event_data: {
           proposal_id: proposalId,
           stage: validationResult.stage,
           error: validationResult.errorOutput.slice(-2000),
@@ -312,7 +312,7 @@ ${validationResult.errorOutput.slice(-4000)}`
         project_id: projectId,
         branch_name: branchName,
         event_type: 'build_failed',
-        payload: { proposal_id: proposalId, error: 'No changes generated' },
+        event_data: { proposal_id: proposalId, error: 'No changes generated' },
       })
 
       return { prNumber: null, prUrl: null, headSha: null }
@@ -348,7 +348,7 @@ ${validationResult.errorOutput.slice(-4000)}`
       project_id: projectId,
       branch_name: branchName,
       event_type: 'build_completed',
-      payload: {
+      event_data: {
         proposal_id: proposalId,
         pr_number: pr.number,
         pr_url: pr.html_url,

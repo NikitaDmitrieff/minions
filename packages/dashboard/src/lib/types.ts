@@ -88,9 +88,10 @@ export type UserIdea = {
 
 // --- Minions-specific types ---
 
-export type FindingCategory = 'code_quality' | 'tests' | 'deps' | 'security' | 'perf' | 'docs' | 'dead_code'
+// Must match CHECK constraint in 00013_findings.sql
+export type FindingCategory = 'bug_risk' | 'tech_debt' | 'security' | 'performance' | 'accessibility' | 'testing_gap' | 'dx'
 export type FindingSeverity = 'low' | 'medium' | 'high' | 'critical'
-export type FindingStatus = 'open' | 'addressed' | 'dismissed'
+export type FindingStatus = 'open' | 'addressed' | 'dismissed' | 'wont_fix'
 
 export type Finding = {
   id: string
@@ -100,28 +101,26 @@ export type Finding = {
   title: string
   description: string
   file_path: string | null
-  line_range: { start: number; end: number } | null
-  scout_run_id: string | null
+  line_range: string | null // int4range stored as text
+  evidence: string | null
+  fingerprint: string
   status: FindingStatus
   created_at: string
+  addressed_at: string | null
 }
 
 export type HealthSnapshot = {
   id: string
   project_id: string
   score: number
-  breakdown: {
-    code_quality?: number
-    test_coverage?: number
-    dep_health?: number
-    security?: number
-    docs?: number
-  }
-  findings_count: number
+  breakdown: Record<string, number>
+  findings_open: number
+  findings_addressed: number
   snapshot_date: string
   created_at: string
 }
 
+// Must match CHECK constraint in 00015_branch_events.sql
 export type BranchEventType =
   | 'scout_finding'
   | 'proposal_created'
@@ -143,7 +142,7 @@ export type BranchEventType =
 export type BranchEvent = {
   id: string
   project_id: string
-  branch_name: string | null
+  branch_name: string
   event_type: BranchEventType
   event_data: Record<string, unknown>
   actor: string

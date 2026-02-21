@@ -6,12 +6,15 @@ CREATE TABLE IF NOT EXISTS feedback_chat.branch_events (
   project_id uuid NOT NULL REFERENCES feedback_chat.projects(id) ON DELETE CASCADE,
   branch_name text NOT NULL,
   event_type text NOT NULL CHECK (event_type IN (
-    'scout_run', 'proposal_created', 'build_started', 'build_succeeded',
-    'build_failed', 'review_requested', 'review_approved', 'review_rejected',
-    'merged', 'deployed', 'build_remediation'
+    'scout_finding', 'proposal_created', 'proposal_approved', 'proposal_rejected',
+    'build_started', 'build_completed', 'build_failed', 'build_remediation',
+    'review_started', 'review_approved', 'review_rejected',
+    'pr_created', 'pr_merged',
+    'deploy_preview', 'deploy_production',
+    'branch_deleted'
   )),
   commit_sha text,
-  payload jsonb DEFAULT '{}',
+  event_data jsonb DEFAULT '{}',
   actor text,
   created_at timestamptz NOT NULL DEFAULT now()
 );

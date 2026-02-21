@@ -2,7 +2,7 @@
 ALTER TABLE feedback_chat.projects
   ADD COLUMN IF NOT EXISTS repo_url text,
   ADD COLUMN IF NOT EXISTS default_branch text NOT NULL DEFAULT 'main',
-  ADD COLUMN IF NOT EXISTS scout_schedule text NOT NULL DEFAULT 'weekly',
+  ADD COLUMN IF NOT EXISTS scout_schedule text NOT NULL DEFAULT '0 6 * * 1',
   ADD COLUMN IF NOT EXISTS max_concurrent_branches int NOT NULL DEFAULT 3,
   ADD COLUMN IF NOT EXISTS paused boolean NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS risk_paths jsonb DEFAULT '[]';

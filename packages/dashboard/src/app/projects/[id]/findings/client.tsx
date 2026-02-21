@@ -10,17 +10,17 @@ type Props = {
 }
 
 const CATEGORIES: { key: FindingCategory; label: string }[] = [
-  { key: 'code_quality', label: 'Code Quality' },
-  { key: 'tests', label: 'Tests' },
-  { key: 'deps', label: 'Dependencies' },
+  { key: 'bug_risk', label: 'Bug Risk' },
+  { key: 'tech_debt', label: 'Tech Debt' },
   { key: 'security', label: 'Security' },
-  { key: 'perf', label: 'Performance' },
-  { key: 'docs', label: 'Docs' },
-  { key: 'dead_code', label: 'Dead Code' },
+  { key: 'performance', label: 'Performance' },
+  { key: 'accessibility', label: 'Accessibility' },
+  { key: 'testing_gap', label: 'Testing Gap' },
+  { key: 'dx', label: 'DX' },
 ]
 
 const SEVERITIES: FindingSeverity[] = ['critical', 'high', 'medium', 'low']
-const STATUSES: FindingStatus[] = ['open', 'addressed', 'dismissed']
+const STATUSES: FindingStatus[] = ['open', 'addressed', 'dismissed', 'wont_fix']
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: 'text-red-400 bg-red-400/10 border-red-400/20',
