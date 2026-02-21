@@ -105,7 +105,7 @@ export interface RunClaudeOptions {
 export async function runClaude(opts: RunClaudeOptions): Promise<void> {
   const { prompt, workDir, timeoutMs, logger, logPrefix = 'claude', restrictedEnv = false } = opts
   const env = await claudeEnv(restrictedEnv)
-  const args = ['--dangerously-skip-permissions', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
+  const args = ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
 
   console.log(`[${logPrefix}] Running Claude Code CLI (stream-json, auth=oauth)...`)
   await logger?.event('text', `Starting Claude CLI (auth=oauth, cwd=${workDir}, prompt=${prompt.length} chars)`)
@@ -122,6 +122,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<void> {
     }, timeoutMs)
 
     let stderr = ''
+    let stdoutBytes = 0
     proc.stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString().trim()
       stderr += text + '\n'
@@ -130,6 +131,14 @@ export async function runClaude(opts: RunClaudeOptions): Promise<void> {
         logger?.event('text', `[claude:stderr] ${text.slice(0, 300)}`)
       }
     })
+
+    // Raw stdout monitoring — log byte count every 5s to detect silent buffering
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length
+    })
+    const monitor = setInterval(() => {
+      console.log(`[${logPrefix}] [monitor] stdout=${stdoutBytes} bytes, stderr=${stderr.length} bytes, pid=${proc.pid}`)
+    }, 5000)
 
     const rl = createInterface({ input: proc.stdout })
     rl.on('line', (line) => {
@@ -159,12 +168,14 @@ export async function runClaude(opts: RunClaudeOptions): Promise<void> {
 
     proc.on('close', (code) => {
       clearTimeout(timer)
+      clearInterval(monitor)
       if (code === 0) resolve()
       else reject(new Error(`Claude CLI exited with code ${code}\nSTDERR: ${stderr.slice(-2000)}`))
     })
 
     proc.on('error', (err) => {
       clearTimeout(timer)
+      clearInterval(monitor)
       reject(err)
     })
   })
