@@ -336,6 +336,8 @@ Before deploying:
 | Container restart loses tokens | Fresh container has no `~/.claude/.credentials.json` | Persist to Supabase, load at startup |
 | Concurrency exceeded | Sessions hang with null exit code, no output | Cap at ~14 concurrent CLI processes |
 | Monitor interval leak | Node process doesn't exit cleanly | `clearInterval(monitor)` on close and error |
+| Hardcoded branch in PR creation | GitHub 422 "head invalid" when using custom branch names | Pass the actual branch name to `createPR()`, don't hardcode |
+| Job retries on PR failure | Worker re-clones and re-runs Claude CLI after a PR 422 error | Separate transient (network) from permanent (bad branch) errors |
 
 ## Reference Implementation
 
