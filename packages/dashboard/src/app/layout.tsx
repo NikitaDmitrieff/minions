@@ -15,7 +15,18 @@ const jetbrains = JetBrains_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'Feedback Chat — Dashboard',
+  title: 'Minions — AI worker swarm for continuous codebase improvement',
+  description: 'An AI worker swarm that continuously analyzes, proposes, builds, and reviews improvements to your codebase. Autonomously.',
+  openGraph: {
+    title: 'Minions',
+    description: 'AI worker swarm for continuous codebase improvement',
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Minions',
+    description: 'AI worker swarm for continuous codebase improvement',
+  },
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
