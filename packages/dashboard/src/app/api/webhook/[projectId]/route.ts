@@ -75,7 +75,7 @@ export async function POST(
     .select('*', { count: 'exact', head: true })
     .eq('project_id', project.id)
     .eq('github_issue_number', payload.issue.number)
-    .in('status', ['pending', 'processing'])
+    .in('status', ['pending', 'processing', 'done'])
 
   if (existingJobs && existingJobs > 0) {
     return NextResponse.json({ status: 'already_queued' })
