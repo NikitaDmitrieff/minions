@@ -150,7 +150,7 @@ export type BranchEvent = {
   created_at: string
 }
 
-export type BranchState = 'active' | 'awaiting_approval' | 'merged' | 'rejected' | 'failed' | 'deployed' | 'pending'
+export type BranchState = 'active' | 'awaiting_approval' | 'needs_action' | 'merged' | 'rejected' | 'failed' | 'deployed' | 'pending'
 
 export type Branch = {
   name: string

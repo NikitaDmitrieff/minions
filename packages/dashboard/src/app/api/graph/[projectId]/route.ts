@@ -39,12 +39,21 @@ export async function GET(
     const lastEvent = branchEvents[branchEvents.length - 1]
     let state: BranchState
 
-    if (lastEvent.event_type === 'pr_merged') state = 'merged'
+    // Terminal states
+    if (lastEvent.event_type === 'pr_merged' || lastEvent.event_type === 'branch_deleted') state = 'merged'
     else if (lastEvent.event_type === 'proposal_rejected' || lastEvent.event_type === 'review_rejected') state = 'rejected'
     else if (lastEvent.event_type === 'build_failed') state = 'failed'
-    else if (lastEvent.event_type === 'deploy_production') state = 'deployed'
-    else if (lastEvent.event_type === 'build_started' || lastEvent.event_type === 'review_started') state = 'active'
-    else if (lastEvent.event_type === 'review_approved' || lastEvent.event_type === 'build_completed') state = 'awaiting_approval'
+    else if (lastEvent.event_type === 'deploy_production' || lastEvent.event_type === 'deploy_preview') state = 'deployed'
+    // Needs human action
+    else if (lastEvent.event_type === 'pr_created') state = 'needs_action'
+    else if (lastEvent.event_type === 'proposal_created') state = 'needs_action'
+    else if (lastEvent.event_type === 'review_approved' || lastEvent.event_type === 'build_completed') state = 'needs_action'
+    // Actively working
+    else if (lastEvent.event_type === 'build_started' || lastEvent.event_type === 'build_remediation') state = 'active'
+    else if (lastEvent.event_type === 'review_started') state = 'active'
+    else if (lastEvent.event_type === 'proposal_approved') state = 'active'
+    // Informational
+    else if (lastEvent.event_type === 'scout_finding') state = 'pending'
     else state = 'pending'
 
     return { name, state, events: branchEvents, lastActivity: lastEvent.created_at }

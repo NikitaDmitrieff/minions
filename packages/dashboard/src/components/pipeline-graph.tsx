@@ -22,6 +22,7 @@ type StageState = 'done' | 'active' | 'failed' | 'waiting'
 const STATE_BADGES: Record<BranchState, { color: string; bg: string; label: string }> = {
   active:            { color: 'text-blue-400',    bg: 'bg-blue-400/10',    label: 'Building' },
   awaiting_approval: { color: 'text-amber-400',   bg: 'bg-amber-400/10',   label: 'Awaiting Review' },
+  needs_action:      { color: 'text-amber-400',   bg: 'bg-amber-400/10',   label: 'Needs Action' },
   merged:            { color: 'text-emerald-400', bg: 'bg-emerald-400/10', label: 'Merged' },
   rejected:          { color: 'text-red-400',     bg: 'bg-red-400/10',     label: 'Rejected' },
   failed:            { color: 'text-red-400',     bg: 'bg-red-400/10',     label: 'Failed' },
@@ -162,7 +163,7 @@ export function PipelineGraph({ branches, onEventClick }: {
 
   // Sort: active branches first, then by last activity
   const sorted = [...branches].sort((a, b) => {
-    const activeOrder: Record<string, number> = { active: 0, awaiting_approval: 1, failed: 2 }
+    const activeOrder: Record<string, number> = { needs_action: 0, active: 1, awaiting_approval: 2, failed: 3 }
     const aOrder = activeOrder[a.state] ?? 3
     const bOrder = activeOrder[b.state] ?? 3
     if (aOrder !== bOrder) return aOrder - bOrder

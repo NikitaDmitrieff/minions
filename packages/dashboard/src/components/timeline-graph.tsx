@@ -46,6 +46,7 @@ const EVENT_LABELS: Record<string, string> = {
 const STATE_COLORS: Record<BranchState, string> = {
   active:            '#3b82f6',
   awaiting_approval: '#f59e0b',
+  needs_action:      '#f59e0b',
   merged:            '#22c55e',
   rejected:          '#ef4444',
   failed:            '#ef4444',

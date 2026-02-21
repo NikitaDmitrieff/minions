@@ -54,6 +54,7 @@ const EVENT_ABBREVS: Record<string, string> = {
 const STATE_COLORS: Record<BranchState, string> = {
   active:            '#3b82f6',
   awaiting_approval: '#f59e0b',
+  needs_action:      '#f59e0b',
   merged:            '#22c55e',
   rejected:          '#ef4444',
   failed:            '#ef4444',
@@ -62,8 +63,8 @@ const STATE_COLORS: Record<BranchState, string> = {
 }
 
 const STATE_LABELS: Record<BranchState, string> = {
-  active: 'Building', awaiting_approval: 'Awaiting Review', merged: 'Merged',
-  rejected: 'Rejected', failed: 'Failed', deployed: 'Deployed', pending: 'Pending',
+  active: 'Building', awaiting_approval: 'Awaiting Review', needs_action: 'Needs Action',
+  merged: 'Merged', rejected: 'Rejected', failed: 'Failed', deployed: 'Deployed', pending: 'Pending',
 }
 
 /* ── Layout constants ── */
@@ -166,7 +167,7 @@ export function GitGraph({ branches, onEventClick }: {
                 stroke={color}
                 strokeWidth={2}
                 opacity={lineOpacity}
-                strokeDasharray={branch.state === 'awaiting_approval' ? '6 4' : undefined}
+                strokeDasharray={branch.state === 'awaiting_approval' || branch.state === 'needs_action' ? '6 4' : undefined}
                 filter={branchHovered ? 'url(#line-glow)' : undefined}
                 style={{ transition: 'opacity 0.2s' }}
               />
@@ -178,7 +179,7 @@ export function GitGraph({ branches, onEventClick }: {
                 stroke={color}
                 strokeWidth={2}
                 opacity={lineOpacity}
-                strokeDasharray={branch.state === 'awaiting_approval' ? '6 4' : undefined}
+                strokeDasharray={branch.state === 'awaiting_approval' || branch.state === 'needs_action' ? '6 4' : undefined}
                 style={{ transition: 'opacity 0.2s' }}
               />
 
