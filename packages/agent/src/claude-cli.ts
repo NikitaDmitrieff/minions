@@ -23,19 +23,15 @@ import type { DbLogger } from './logger.js'
  *                     If false, pass full process.env minus sensitive keys.
  */
 export async function claudeEnv(restricted = false): Promise<NodeJS.ProcessEnv> {
-  // OAuth is mandatory for CLI
-  if (!process.env.CLAUDE_CREDENTIALS_JSON) {
-    throw new Error(
-      'CLAUDE_CREDENTIALS_JSON is not set. Claude CLI requires OAuth (Max subscription). ' +
-      'ANTHROPIC_API_KEY is for SDK calls only and must never be used for CLI sessions.',
-    )
-  }
-
+  // OAuth is mandatory for CLI. Credentials are loaded at startup by
+  // initCredentials() (from Supabase or CLAUDE_CREDENTIALS_JSON env var)
+  // and written to ~/.claude/.credentials.json. We read from that file.
   const ok = await ensureValidToken()
   if (!ok) {
     throw new Error(
-      'OAuth token refresh failed. Claude CLI cannot run without a valid OAuth token. ' +
-      'Check CLAUDE_CREDENTIALS_JSON and ensure the refresh token is still valid.',
+      'OAuth token not available. Claude CLI requires OAuth (Max subscription). ' +
+      'Ensure initCredentials() ran at startup and credentials exist in Supabase ' +
+      'or CLAUDE_CREDENTIALS_JSON env var. ANTHROPIC_API_KEY must never be used for CLI.',
     )
   }
 
