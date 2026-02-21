@@ -105,13 +105,16 @@ export interface RunClaudeOptions {
 export async function runClaude(opts: RunClaudeOptions): Promise<void> {
   const { prompt, workDir, timeoutMs, logger, logPrefix = 'claude', restrictedEnv = false } = opts
   const env = await claudeEnv(restrictedEnv)
-  const args = ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
+  const args = ['--dangerously-skip-permissions', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
 
   console.log(`[${logPrefix}] Running Claude Code CLI (stream-json, auth=oauth)...`)
   await logger?.event('text', `Starting Claude CLI (auth=oauth, cwd=${workDir}, prompt=${prompt.length} chars)`)
 
   return new Promise<void>((resolve, reject) => {
     const proc = spawn('claude', args, { cwd: workDir, env, stdio: ['pipe', 'pipe', 'pipe'] })
+
+    // Close stdin immediately so the CLI doesn't wait for input
+    proc.stdin.end()
 
     const timer = setTimeout(() => {
       proc.kill('SIGTERM')
