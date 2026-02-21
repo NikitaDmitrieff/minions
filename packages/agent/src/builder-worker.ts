@@ -133,6 +133,9 @@ async function runClaude(
             if (block.type === 'tool_use') {
               const summary = summarizeToolInput(block.name, block.input ?? {})
               logger.event('tool_use', summary, { tool: block.name, input: block.input })
+            } else if (block.type === 'text' && block.text?.trim()) {
+              const preview = block.text.trim().slice(0, 200)
+              logger.event('text', `[claude] ${preview}`)
             }
           }
         }
