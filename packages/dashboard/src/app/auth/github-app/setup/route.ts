@@ -45,5 +45,5 @@ export async function GET(request: NextRequest) {
     })
     .eq('id', state)
 
-  return NextResponse.redirect(new URL(`/projects/${state}?installed=true`, request.url))
+  return NextResponse.redirect(new URL(`/projects/${state}/settings?installed=true`, request.url))
 }

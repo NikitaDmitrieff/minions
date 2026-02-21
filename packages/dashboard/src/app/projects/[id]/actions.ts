@@ -91,6 +91,47 @@ export async function triggerSetup(projectId: string) {
   return { success: true }
 }
 
+export async function triggerScout(projectId: string) {
+  const supabase = await createClient()
+
+  // Verify project exists and has GitHub App installed
+  const { data: project } = await supabase
+    .from('projects')
+    .select('id, github_repo, github_installation_id, paused')
+    .eq('id', projectId)
+    .single()
+
+  if (!project) return { error: 'Project not found' }
+  if (!project.github_installation_id) return { error: 'GitHub App not installed' }
+  if (project.paused) return { error: 'Project is paused' }
+
+  // Check no scout job already pending/processing
+  const { data: existing } = await supabase
+    .from('job_queue')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('job_type', 'scout')
+    .in('status', ['pending', 'processing'])
+    .limit(1)
+
+  if (existing && existing.length > 0) return { error: 'Scout already in progress' }
+
+  // Create scout job
+  const { error: jobError } = await supabase
+    .from('job_queue')
+    .insert({
+      project_id: projectId,
+      job_type: 'scout',
+      github_issue_number: 0,
+      issue_title: `Scout: ${project.github_repo}`,
+      issue_body: '{}',
+    })
+
+  if (jobError) return { error: 'Failed to create scout job' }
+
+  return { success: true }
+}
+
 export async function resetSetupStatus(projectId: string) {
   const supabase = await createClient()
   await supabase

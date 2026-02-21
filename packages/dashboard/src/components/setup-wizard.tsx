@@ -1,10 +1,10 @@
 'use client'
 
 import { useState, useEffect, useCallback, useTransition } from 'react'
-import { Github, Loader2, Check, ExternalLink, AlertCircle, Zap, Copy, CheckCheck } from 'lucide-react'
+import { Github, Loader2, Check, ExternalLink, AlertCircle, Zap, Copy, CheckCheck, Search } from 'lucide-react'
 import { sileo } from 'sileo'
 import { createClient } from '@/lib/supabase/client'
-import { triggerSetup, resetSetupStatus } from '@/app/projects/[id]/actions'
+import { triggerSetup, triggerScout, resetSetupStatus } from '@/app/projects/[id]/actions'
 import type { SetupStatus } from '@/lib/types'
 
 type Props = {
@@ -56,6 +56,7 @@ export function SetupWizard({ projectId, githubRepo, installationId, initialStat
   const [prUrl, setPrUrl] = useState<string | null>(initialPrUrl)
   const [error, setError] = useState<string | null>(initialError)
   const [isPending, startTransition] = useTransition()
+  const [scoutQueued, setScoutQueued] = useState(false)
 
   // Poll for status updates during active setup + until PR URL is available
   useEffect(() => {
@@ -93,6 +94,17 @@ export function SetupWizard({ projectId, githubRepo, installationId, initialStat
       }
       setStatus('queued')
       setError(null)
+    })
+  }, [projectId])
+
+  const handleScout = useCallback(() => {
+    startTransition(async () => {
+      const result = await triggerScout(projectId)
+      if (result.error) {
+        sileo.error({ title: result.error })
+        return
+      }
+      setScoutQueued(true)
     })
   }, [projectId])
 
@@ -149,14 +161,30 @@ export function SetupWizard({ projectId, githubRepo, installationId, initialStat
           <p className="text-xs text-muted mb-4">
             Ready to set up the feedback widget in <span className="text-fg font-medium">{githubRepo}</span>.
           </p>
-          <button
-            onClick={handleSetup}
-            disabled={isPending}
-            className="btn-primary flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-medium"
-          >
-            {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-            Set up my repo
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={handleSetup}
+              disabled={isPending}
+              className="btn-primary flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-medium"
+            >
+              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+              Set up my repo
+            </button>
+            <button
+              onClick={handleScout}
+              disabled={isPending || scoutQueued}
+              className="flex h-10 items-center gap-2 rounded-xl border border-edge bg-surface px-5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover disabled:opacity-50"
+            >
+              {scoutQueued ? (
+                <Check className="h-4 w-4 text-success" />
+              ) : isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Search className="h-4 w-4" />
+              )}
+              {scoutQueued ? 'Scout queued' : 'Run Scout Now'}
+            </button>
+          </div>
         </div>
       </div>
     )

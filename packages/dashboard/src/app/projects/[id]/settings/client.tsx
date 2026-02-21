@@ -1,8 +1,9 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { Brain, Compass, Loader2, Plus, Sparkles, X, Clock, Shield, GitBranch, Pause, Play } from 'lucide-react'
+import { Brain, Compass, Loader2, Plus, Sparkles, X, Clock, Shield, GitBranch, Pause, Play, Search, Check } from 'lucide-react'
 import { SetupSection } from '@/components/setup-section'
+import { triggerScout } from '@/app/projects/[id]/actions'
 import type { SetupStatus, AutonomyMode } from '@/lib/types'
 
 type Props = {
@@ -76,6 +77,8 @@ export function SettingsPageClient({
   const [maxBranches, setMaxBranches] = useState(initialMaxBranches)
   const [paused, setPaused] = useState(initialPaused)
   const [savingConfig, setSavingConfig] = useState(false)
+  const [scoutQueued, setScoutQueued] = useState(false)
+  const [scoutLoading, setScoutLoading] = useState(false)
 
   const generateContext = useCallback(async () => {
     setGenerating(true)
@@ -146,6 +149,21 @@ export function SettingsPageClient({
       })
     } finally {
       setSavingConfig(false)
+    }
+  }, [projectId])
+
+  const handleRunScout = useCallback(async () => {
+    setScoutLoading(true)
+    try {
+      const result = await triggerScout(projectId)
+      if (result.error) {
+        // Reset on error — user can try again
+        setScoutLoading(false)
+        return
+      }
+      setScoutQueued(true)
+    } finally {
+      setScoutLoading(false)
     }
   }, [projectId])
 
@@ -304,9 +322,25 @@ export function SettingsPageClient({
 
       {/* Section 3: Scout Schedule */}
       <div className="glass-card p-5">
-        <div className="mb-4 flex items-center gap-2">
-          <Clock className="h-4 w-4 text-accent" />
-          <h2 className="text-sm font-semibold text-fg">Scout Schedule</h2>
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Clock className="h-4 w-4 text-accent" />
+            <h2 className="text-sm font-semibold text-fg">Scout Schedule</h2>
+          </div>
+          <button
+            onClick={handleRunScout}
+            disabled={scoutLoading || scoutQueued || paused || !installationId}
+            className="flex items-center gap-1.5 rounded-lg bg-accent/10 px-3 py-1.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
+          >
+            {scoutQueued ? (
+              <Check className="h-3 w-3 text-success" />
+            ) : scoutLoading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Search className="h-3 w-3" />
+            )}
+            {scoutQueued ? 'Scout queued' : 'Run Now'}
+          </button>
         </div>
 
         <p className="mb-3 text-xs text-muted">
