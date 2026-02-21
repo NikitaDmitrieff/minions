@@ -116,10 +116,24 @@ export async function runClaude(opts: RunClaudeOptions): Promise<void> {
     // Close stdin immediately so the CLI doesn't wait for input
     proc.stdin.end()
 
+    let settled = false
+    const settle = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearTimeout(resultGraceTimer)
+      clearInterval(monitor)
+      fn()
+    }
+
     const timer = setTimeout(() => {
       proc.kill('SIGTERM')
-      reject(new Error(`Claude CLI timed out after ${Math.round(timeoutMs / 60000)} minutes`))
+      settle(() => reject(new Error(`Claude CLI timed out after ${Math.round(timeoutMs / 60000)} minutes`)))
     }, timeoutMs)
+
+    // Grace period: if CLI emits 'result' but doesn't exit within 15s, kill it
+    let resultGraceTimer: ReturnType<typeof setTimeout>
+    const RESULT_GRACE_MS = 15_000
 
     let stderr = ''
     let stdoutBytes = 0
@@ -144,7 +158,16 @@ export async function runClaude(opts: RunClaudeOptions): Promise<void> {
     rl.on('line', (line) => {
       try {
         const evt = JSON.parse(line)
-        if (evt.type === 'assistant' && evt.message?.content) {
+        if (evt.type === 'result') {
+          // CLI is done — start grace period in case it doesn't exit on its own
+          console.log(`[${logPrefix}] [event] result (starting ${RESULT_GRACE_MS / 1000}s exit grace period)`)
+          resultGraceTimer = setTimeout(() => {
+            console.log(`[${logPrefix}] CLI did not exit after result — killing process`)
+            logger?.event('text', 'CLI hung after result event — force killed')
+            proc.kill('SIGTERM')
+            settle(() => resolve())
+          }, RESULT_GRACE_MS)
+        } else if (evt.type === 'assistant' && evt.message?.content) {
           for (const block of evt.message.content) {
             if (block.type === 'tool_use') {
               const summary = summarizeToolInput(block.name, block.input ?? {})
@@ -167,16 +190,14 @@ export async function runClaude(opts: RunClaudeOptions): Promise<void> {
     })
 
     proc.on('close', (code) => {
-      clearTimeout(timer)
-      clearInterval(monitor)
-      if (code === 0) resolve()
-      else reject(new Error(`Claude CLI exited with code ${code}\nSTDERR: ${stderr.slice(-2000)}`))
+      settle(() => {
+        if (code === 0 || code === null) resolve()
+        else reject(new Error(`Claude CLI exited with code ${code}\nSTDERR: ${stderr.slice(-2000)}`))
+      })
     })
 
     proc.on('error', (err) => {
-      clearTimeout(timer)
-      clearInterval(monitor)
-      reject(err)
+      settle(() => reject(err))
     })
   })
 }
