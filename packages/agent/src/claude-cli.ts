@@ -105,7 +105,7 @@ export interface RunClaudeOptions {
 export async function runClaude(opts: RunClaudeOptions): Promise<void> {
   const { prompt, workDir, timeoutMs, logger, logPrefix = 'claude', restrictedEnv = false } = opts
   const env = await claudeEnv(restrictedEnv)
-  const args = ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
+  const args = ['--dangerously-skip-permissions', '--verbose', '--model', 'claude-sonnet-4-6', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
 
   console.log(`[${logPrefix}] Running Claude Code CLI (stream-json, auth=oauth)...`)
   await logger?.event('text', `Starting Claude CLI (auth=oauth, cwd=${workDir}, prompt=${prompt.length} chars)`)
