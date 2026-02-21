@@ -121,7 +121,9 @@ async function runClaude(
 
     let stderr = ''
     proc.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString()
+      const text = chunk.toString().trim()
+      stderr += text + '\n'
+      if (text) logger.event('text', `[claude:stderr] ${text.slice(0, 300)}`)
     })
 
     const rl = createInterface({ input: proc.stdout })
@@ -138,8 +140,12 @@ async function runClaude(
               logger.event('text', `[claude] ${preview}`)
             }
           }
+        } else if (evt.type) {
+          logger.event('text', `[claude:event] ${evt.type}`)
         }
-      } catch { /* non-JSON line */ }
+      } catch {
+        if (line.trim()) logger.event('text', `[claude:raw] ${line.trim().slice(0, 200)}`)
+      }
     })
 
     proc.on('close', (code) => {
