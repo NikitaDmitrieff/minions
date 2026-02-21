@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { ensureValidToken } from './oauth.js'
 import { DbLogger } from './logger.js'
+import { validateRef, redactToken } from './sanitize.js'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -36,7 +37,7 @@ function run(cmd: string, cwd: string, timeoutMs = STEP_TIMEOUT_MS): string {
   } catch (err: unknown) {
     const e = err as { stderr?: string; stdout?: string; status?: number }
     const details = `Exit ${e.status}\nSTDERR: ${(e.stderr || '').slice(-2000)}\nSTDOUT: ${(e.stdout || '').slice(-2000)}`
-    throw new Error(`Command failed: ${cmd}\n${details}`)
+    throw new Error(`Command failed: ${redactToken(cmd)}\n${redactToken(details)}`)
   }
 }
 
@@ -146,9 +147,15 @@ export async function runSelfImproveJob(input: SelfImproveInput): Promise<{ prUr
     }
 
     // Clone without token in URL to avoid leaking it in error messages
-    run(`git clone --depth=1 https://github.com/${FEEDBACK_CHAT_REPO}.git ${workDir}`, '/tmp')
+    execFileSync(
+      'git', ['clone', '--depth=1', `https://github.com/${FEEDBACK_CHAT_REPO}.git`, workDir],
+      { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+    )
     // Set authenticated remote for push
-    run(`git remote set-url origin https://x-access-token:${token}@github.com/${FEEDBACK_CHAT_REPO}.git`, workDir)
+    execFileSync(
+      'git', ['remote', 'set-url', 'origin', `https://x-access-token:${token}@github.com/${FEEDBACK_CHAT_REPO}.git`],
+      { cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+    )
     run('npm install', workDir)
 
     // 2. Run Claude CLI with failure context
@@ -187,14 +194,19 @@ export async function runSelfImproveJob(input: SelfImproveInput): Promise<{ prUr
 
     // 5. Branch, commit, push
     await logger.log(`[self-improve] Pushing branch ${branch}...`)
-    run(`git checkout -b ${branch}`, workDir)
+    validateRef(branch)
+    execFileSync('git', ['checkout', '-b', branch], {
+      cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    })
     run('git add -A', workDir)
     execFileSync(
       'git',
       ['commit', '-m', `fix(${failureCategory}): auto-fix from failed run ${shortHash}\n\nTriggered by failure analysis of run ${sourceRunId}.`],
       { cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
     )
-    run(`git push -u origin ${branch}`, workDir)
+    execFileSync('git', ['push', '-u', 'origin', branch], {
+      cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    })
 
     // 6. Create PR
     await logger.log('[self-improve] Creating PR...')

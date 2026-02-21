@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { parseIssueBody } from './parse-issue.js'
+import { validateRef, redactToken } from './sanitize.js'
 import {
   commentOnIssue,
   labelIssue,
@@ -49,7 +50,7 @@ function run(cmd: string, cwd: string, timeoutMs = STEP_TIMEOUT_MS): string {
   } catch (err: unknown) {
     const e = err as { stderr?: string; stdout?: string; status?: number }
     const details = `Exit code: ${e.status}\nSTDERR: ${(e.stderr || '').slice(-2000)}\nSTDOUT: ${(e.stdout || '').slice(-2000)}`
-    throw new Error(`Command failed: ${cmd}\n${details}`)
+    throw new Error(`Command failed: ${redactToken(cmd)}\n${redactToken(details)}`)
   }
 }
 
@@ -258,9 +259,10 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
   try {
     cleanup(workDir)
     await logger?.event('text', `Cloning repo ${repo}...`)
-    run(
-      `git clone --depth=1 https://x-access-token:${token}@github.com/${repo}.git ${workDir}`,
-      '/tmp'
+    execFileSync(
+      'git',
+      ['clone', '--depth=1', `https://x-access-token:${token}@github.com/${repo}.git`, workDir],
+      { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
     )
     await logger?.event('text', 'Clone complete')
 
@@ -421,9 +423,12 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
 
   // 5. Branch + PR
   const branch = customBranch || `feedback/issue-${issueNumber}`
+  validateRef(branch)
   try {
     await logger?.event('text', `Creating branch: ${branch}`)
-    run(`git checkout -b ${branch}`, workDir)
+    execFileSync('git', ['checkout', '-b', branch], {
+      cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    })
     run('git add -A', workDir)
     execFileSync(
       'git',
@@ -431,7 +436,9 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
       { cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
     )
     await logger?.event('text', `Pushing to origin/${branch}...`)
-    run(`git push -f origin ${branch}`, workDir)
+    execFileSync('git', ['push', '-f', 'origin', branch], {
+      cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    })
     await logger?.event('text', 'Push complete')
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)

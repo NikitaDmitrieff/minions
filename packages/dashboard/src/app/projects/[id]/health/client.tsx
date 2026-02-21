@@ -162,31 +162,44 @@ export function HealthPageClient({ projectId, snapshots }: Props) {
         </h3>
         <div className="space-y-4">
           {Object.entries(BREAKDOWN_LABELS).map(([key, label]) => {
-            const value = (breakdown as Record<string, number>)[key]
-            const prevValue = previous?.breakdown
-              ? (previous.breakdown as Record<string, number>)[key]
-              : undefined
-            const diff = prevValue != null && value != null ? value - prevValue : null
+            const entry = breakdown[key]
+            const count = entry?.count ?? null
+            const severity = entry?.worst_severity ?? null
+            const prevEntry = previous?.breakdown?.[key]
+            const prevCount = prevEntry?.count ?? null
+            const diff = prevCount != null && count != null ? count - prevCount : null
+
+            const severityColor = (s: string | null) => {
+              if (!s) return 'text-dim'
+              if (s === 'critical') return 'text-red-400'
+              if (s === 'high') return 'text-amber-400'
+              return 'text-success'
+            }
 
             return (
               <div key={key}>
                 <div className="mb-1.5 flex items-center justify-between">
                   <span className="text-sm text-fg">{label}</span>
                   <div className="flex items-center gap-2">
+                    {severity && (
+                      <span className={`text-[11px] ${severityColor(severity)}`}>
+                        {severity}
+                      </span>
+                    )}
                     {diff !== null && diff !== 0 && (
-                      <span className={`text-[11px] tabular-nums ${diff > 0 ? 'text-success' : 'text-red-400'}`}>
+                      <span className={`text-[11px] tabular-nums ${diff > 0 ? 'text-red-400' : 'text-success'}`}>
                         {diff > 0 ? '+' : ''}{diff}
                       </span>
                     )}
-                    <span className={`text-sm font-medium tabular-nums ${value != null ? scoreColor(value) : 'text-dim'}`}>
-                      {value != null ? value : '—'}
+                    <span className={`text-sm font-medium tabular-nums ${count != null ? 'text-fg' : 'text-dim'}`}>
+                      {count != null ? count : '—'}
                     </span>
                   </div>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
                   <div
-                    className={`h-full rounded-full transition-all duration-500 ${value != null ? barColor(value) : 'bg-white/[0.06]'}`}
-                    style={{ width: `${value ?? 0}%` }}
+                    className={`h-full rounded-full transition-all duration-500 ${count != null && count > 0 ? severityColor(severity).replace('text-', 'bg-') : 'bg-white/[0.06]'}`}
+                    style={{ width: `${Math.min((count ?? 0) * 10, 100)}%` }}
                   />
                 </div>
               </div>

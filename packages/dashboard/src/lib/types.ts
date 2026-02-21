@@ -113,7 +113,7 @@ export type HealthSnapshot = {
   id: string
   project_id: string
   score: number
-  breakdown: Record<string, number>
+  breakdown: Record<string, { count: number; worst_severity: string }>
   findings_open: number
   findings_addressed: number
   snapshot_date: string

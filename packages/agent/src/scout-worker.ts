@@ -1,8 +1,9 @@
-import { execSync } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join, extname, relative } from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { getInstallationToken, isGitHubAppConfigured } from './github-app.js'
+import { redactToken } from './sanitize.js'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -59,7 +60,7 @@ function run(cmd: string, cwd: string, timeoutMs = STEP_TIMEOUT_MS): string {
     })
   } catch (err: unknown) {
     const e = err as { stderr?: string; stdout?: string; status?: number }
-    throw new Error(`Command failed: ${cmd}\nExit ${e.status}\n${(e.stderr || '').slice(-1000)}`)
+    throw new Error(`Command failed: ${redactToken(cmd)}\nExit ${e.status}\n${redactToken((e.stderr || '').slice(-1000))}`)
   }
 }
 
@@ -315,9 +316,11 @@ export async function runScoutJob(input: ScoutInput): Promise<void> {
     }
 
     const branch = project.default_branch || 'main'
-    run(
-      `git clone --depth=1 --branch ${branch} https://x-access-token:${token}@github.com/${owner}/${repo}.git ${workDir}`,
-      '/tmp',
+    execFileSync(
+      'git',
+      ['clone', '--depth=1', '--branch', branch,
+       `https://x-access-token:${token}@github.com/${owner}/${repo}.git`, workDir],
+      { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
     )
     // Safety: disable hooks in cloned repo
     run('git config core.hooksPath /dev/null', workDir)

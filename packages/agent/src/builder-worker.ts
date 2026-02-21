@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline'
 import { Octokit } from '@octokit/rest'
 import { ensureValidToken } from './oauth.js'
 import { DbLogger } from './logger.js'
+import { validateRef, redactToken } from './sanitize.js'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -43,7 +44,7 @@ function run(cmd: string, cwd: string, timeoutMs = STEP_TIMEOUT_MS): string {
   } catch (err: unknown) {
     const e = err as { stderr?: string; stdout?: string; status?: number }
     const details = `Exit ${e.status}\nSTDERR: ${(e.stderr || '').slice(-2000)}\nSTDOUT: ${(e.stdout || '').slice(-2000)}`
-    throw new Error(`Command failed: ${cmd}\n${details}`)
+    throw new Error(`Command failed: ${redactToken(cmd)}\n${redactToken(details)}`)
   }
 }
 
@@ -155,7 +156,7 @@ async function runClaude(
 function validate(workDir: string, logger: DbLogger): ValidationResult {
   const steps: Array<{ stage: ValidationResult['stage']; cmd: string }> = [
     { stage: 'lint', cmd: 'npm run lint --if-present' },
-    { stage: 'typecheck', cmd: 'npx tsc --noEmit --pretty 2>&1 || true' },
+    { stage: 'typecheck', cmd: 'npx tsc --noEmit --pretty' },
     { stage: 'build', cmd: 'npm run build' },
     { stage: 'test', cmd: 'npm test --if-present' },
   ]
@@ -213,6 +214,8 @@ export async function runBuilderJob(input: BuilderInput): Promise<{
 
   if (!token) throw new Error('No GitHub token available for builder job')
 
+  validateRef(branchName)
+
   const [owner, repo] = project.github_repo.split('/')
   const octokit = new Octokit({ auth: token })
 
@@ -221,9 +224,11 @@ export async function runBuilderJob(input: BuilderInput): Promise<{
     await logger.event('text', `Cloning ${project.github_repo}...`)
     if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true })
 
-    run(
-      `git clone --depth=1 -c core.hooksPath=/dev/null https://x-access-token:${token}@github.com/${project.github_repo}.git ${workDir}`,
-      '/tmp',
+    execFileSync(
+      'git',
+      ['clone', '--depth=1', '-c', 'core.hooksPath=/dev/null',
+       `https://x-access-token:${token}@github.com/${project.github_repo}.git`, workDir],
+      { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
     )
 
     // Strip CLAUDE.md to prevent prompt injection from consumer repos
@@ -238,7 +243,9 @@ export async function runBuilderJob(input: BuilderInput): Promise<{
     await logger.event('text', 'Dependencies installed')
 
     // 2. Create branch
-    run(`git checkout -b ${branchName}`, workDir)
+    execFileSync('git', ['checkout', '-b', branchName], {
+      cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    })
     await logger.event('text', `Created branch: ${branchName}`)
 
     // 3. Run Claude CLI with the spec
@@ -326,7 +333,9 @@ ${validationResult.errorOutput.slice(-4000)}`
 
     const headSha = getHeadSha(workDir)
     await logger.event('text', `Pushing to origin/${branchName} (SHA: ${headSha.slice(0, 7)})...`)
-    run(`git push -u origin ${branchName}`, workDir)
+    execFileSync('git', ['push', '-u', 'origin', branchName], {
+      cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    })
     await logger.event('text', 'Push complete')
 
     // 6. Create PR via Octokit

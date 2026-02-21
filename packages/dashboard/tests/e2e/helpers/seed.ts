@@ -5,7 +5,7 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
 export function adminClient() {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    db: { schema: 'feedback_chat' },
+    db: { schema: 'minions' },
   })
 }
 
