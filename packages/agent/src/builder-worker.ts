@@ -1,10 +1,8 @@
-import { execSync, execFileSync, spawn } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { existsSync, rmSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { createInterface } from 'node:readline'
 import { Octokit } from '@octokit/rest'
-import { ensureValidToken } from './oauth.js'
+import { runClaude } from './claude-cli.js'
 import { DbLogger } from './logger.js'
 import { validateRef, redactToken } from './sanitize.js'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -48,117 +46,7 @@ function run(cmd: string, cwd: string, timeoutMs = STEP_TIMEOUT_MS): string {
   }
 }
 
-/** Build a restricted env for Claude CLI: only HOME, PATH, and auth token. */
-async function claudeEnv(): Promise<NodeJS.ProcessEnv> {
-  const limited: NodeJS.ProcessEnv = {
-    HOME: process.env.HOME,
-    PATH: process.env.PATH,
-    CI: 'true',
-    NODE_ENV: 'production',
-  }
-
-  if (process.env.CLAUDE_CREDENTIALS_JSON) {
-    const ok = await ensureValidToken()
-    if (ok) {
-      try {
-        const credsPath = join(homedir(), '.claude', '.credentials.json')
-        const creds = JSON.parse(readFileSync(credsPath, 'utf-8'))
-        const accessToken = creds?.claudeAiOauth?.accessToken
-        if (accessToken) {
-          limited.CLAUDE_CODE_OAUTH_TOKEN = accessToken
-          return limited
-        }
-      } catch { /* fall through */ }
-    }
-  }
-
-  if (process.env.ANTHROPIC_API_KEY) {
-    limited.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
-  }
-
-  return limited
-}
-
-function summarizeToolInput(tool: string, input: Record<string, unknown>): string {
-  switch (tool) {
-    case 'Read':
-      return `Reading ${input.file_path ?? 'file'}`
-    case 'Edit':
-      return `Editing ${input.file_path ?? 'file'}`
-    case 'Write':
-      return `Creating ${input.file_path ?? 'file'}`
-    case 'Bash':
-      return `Running: ${String(input.command ?? '').slice(0, 120)}`
-    case 'Glob':
-      return `Searching files: ${input.pattern ?? ''}`
-    case 'Grep':
-      return `Searching for: ${input.pattern ?? ''}`
-    default:
-      return `Using tool: ${tool}`
-  }
-}
-
-async function runClaude(
-  prompt: string,
-  workDir: string,
-  timeoutMs: number,
-  logger: DbLogger,
-): Promise<void> {
-  const env = await claudeEnv()
-  const authMethod = env.CLAUDE_CODE_OAUTH_TOKEN ? 'oauth' : env.ANTHROPIC_API_KEY ? 'api-key' : 'none'
-  const args = ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
-  await logger.event('text', `Starting Claude CLI (auth=${authMethod}, cwd=${workDir}, prompt=${prompt.length} chars)`)
-  await logger.event('text', `[cmd] claude ${args.slice(0, -2).join(' ')} -p <prompt>`)
-
-  return new Promise<void>((resolve, reject) => {
-    const proc = spawn('claude', args, { cwd: workDir, env, stdio: ['pipe', 'pipe', 'pipe'] })
-
-    const timer = setTimeout(() => {
-      proc.kill('SIGTERM')
-      reject(new Error(`Claude CLI timed out after ${Math.round(timeoutMs / 60000)} minutes`))
-    }, timeoutMs)
-
-    let stderr = ''
-    proc.stderr.on('data', (chunk: Buffer) => {
-      const text = chunk.toString().trim()
-      stderr += text + '\n'
-      if (text) logger.event('text', `[claude:stderr] ${text.slice(0, 300)}`)
-    })
-
-    const rl = createInterface({ input: proc.stdout })
-    rl.on('line', (line) => {
-      try {
-        const evt = JSON.parse(line)
-        if (evt.type === 'assistant' && evt.message?.content) {
-          for (const block of evt.message.content) {
-            if (block.type === 'tool_use') {
-              const summary = summarizeToolInput(block.name, block.input ?? {})
-              logger.event('tool_use', summary, { tool: block.name, input: block.input })
-            } else if (block.type === 'text' && block.text?.trim()) {
-              const preview = block.text.trim().slice(0, 200)
-              logger.event('text', `[claude] ${preview}`)
-            }
-          }
-        } else if (evt.type) {
-          logger.event('text', `[claude:event] ${evt.type}`)
-        }
-      } catch {
-        if (line.trim()) logger.event('text', `[claude:raw] ${line.trim().slice(0, 200)}`)
-      }
-    })
-
-    proc.on('close', (code) => {
-      clearTimeout(timer)
-      if (code === 0) resolve()
-      else reject(new Error(`Claude CLI exited with code ${code}\nSTDERR: ${stderr.slice(-2000)}`))
-    })
-
-    proc.on('error', (err) => {
-      clearTimeout(timer)
-      reject(err)
-    })
-  })
-}
+// claudeEnv, summarizeToolInput, runClaude → shared in claude-cli.ts
 
 /** Tiered validation: lint -> typecheck -> build -> test (fail fast). */
 function validate(workDir: string, logger: DbLogger): ValidationResult {
@@ -274,7 +162,7 @@ ${spec}
 - Run the build to verify your changes compile before finishing`
 
     await logger.event('text', `Running Claude CLI (spec: ${spec.length} chars)...`)
-    await runClaude(prompt, workDir, CLAUDE_TIMEOUT_MS, logger)
+    await runClaude({ prompt, workDir, timeoutMs: CLAUDE_TIMEOUT_MS, logger, logPrefix: `builder-${proposalId.slice(0, 8)}`, restrictedEnv: true })
     await logger.event('text', 'Claude CLI finished')
 
     // 4. Validate with remediation loop
@@ -288,7 +176,7 @@ ${spec}
 ## Errors
 ${validationResult.errorOutput.slice(-4000)}`
 
-      await runClaude(fixPrompt, workDir, CLAUDE_TIMEOUT_MS / 2, logger)
+      await runClaude({ prompt: fixPrompt, workDir, timeoutMs: CLAUDE_TIMEOUT_MS / 2, logger, logPrefix: `builder-${proposalId.slice(0, 8)}`, restrictedEnv: true })
       validationResult = validate(workDir, logger)
 
       if (validationResult.success) {

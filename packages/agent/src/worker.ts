@@ -1,9 +1,8 @@
-import { execSync, execFileSync, spawn } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { createInterface } from 'node:readline'
 import { parseIssueBody } from './parse-issue.js'
+import { runClaude } from './claude-cli.js'
 import { validateRef, redactToken } from './sanitize.js'
 import {
   commentOnIssue,
@@ -13,7 +12,7 @@ import {
   removeLabelFromIssue,
   getIssueComments,
 } from './github.js'
-import { ensureValidToken, initCredentials } from './oauth.js'
+import { initCredentials } from './oauth.js'
 import { loadConfig, matchesEnvPattern } from './config.js'
 import type { GitHubConfig } from './github.js'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -54,119 +53,7 @@ function run(cmd: string, cwd: string, timeoutMs = STEP_TIMEOUT_MS): string {
   }
 }
 
-// Build env for Claude CLI: refresh OAuth token and pass it via
-// CLAUDE_CODE_OAUTH_TOKEN so the CLI uses the Max subscription.
-// Also strip ANTHROPIC_API_KEY to ensure it doesn't fall back to API billing.
-async function claudeEnv(): Promise<NodeJS.ProcessEnv> {
-  if (process.env.CLAUDE_CREDENTIALS_JSON) {
-    const ok = await ensureValidToken()
-    if (!ok) {
-      console.warn('[claude] OAuth refresh failed, falling back to process.env')
-      const { CLAUDECODE: _cc, ...envWithoutClaude } = process.env
-      return { ...envWithoutClaude, CI: 'true' }
-    }
-    try {
-      const credsPath = join(homedir(), '.claude', '.credentials.json')
-      const creds = JSON.parse(readFileSync(credsPath, 'utf-8'))
-      const accessToken = creds?.claudeAiOauth?.accessToken
-      if (accessToken) {
-        const { ANTHROPIC_API_KEY: _, ...rest } = process.env
-          const { CLAUDECODE: _cc, ...rest2 } = rest
-        return { ...rest2, CLAUDE_CODE_OAUTH_TOKEN: accessToken, CI: 'true' }
-      }
-    } catch {}
-  }
-  const { CLAUDECODE: _cc, ...envWithoutClaude } = process.env
-  return { ...envWithoutClaude, CI: 'true' }
-}
-
-function summarizeToolInput(tool: string, input: Record<string, unknown>): string {
-  switch (tool) {
-    case 'Read':
-      return `Reading ${input.file_path ?? 'file'}`
-    case 'Edit':
-      return `Editing ${input.file_path ?? 'file'}`
-    case 'Write':
-      return `Creating ${input.file_path ?? 'file'}`
-    case 'Bash':
-      return `Running: ${String(input.command ?? '').slice(0, 120)}`
-    case 'Glob':
-      return `Searching files: ${input.pattern ?? ''}`
-    case 'Grep':
-      return `Searching for: ${input.pattern ?? ''}`
-    default:
-      return `Using tool: ${tool}`
-  }
-}
-
-async function runClaude(prompt: string, workDir: string, issueNumber: number, timeoutMs: number, logger?: DbLogger): Promise<void> {
-  const env = await claudeEnv()
-  const authMethod = env.CLAUDE_CODE_OAUTH_TOKEN ? 'oauth' : env.ANTHROPIC_API_KEY ? 'api-key' : 'none'
-  const args = ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
-  console.log(`[job-${issueNumber}] Running Claude Code CLI (stream-json, auth=${authMethod})...`)
-  await logger?.event('text', `Starting Claude CLI (auth=${authMethod}, cwd=${workDir}, prompt=${prompt.length} chars)`)
-
-  return new Promise<void>((resolve, reject) => {
-    const proc = spawn('claude', args, { cwd: workDir, env, stdio: ['pipe', 'pipe', 'pipe'] })
-
-    const timer = setTimeout(() => {
-      proc.kill('SIGTERM')
-      reject(new Error(`Claude CLI timed out after ${Math.round(timeoutMs / 60000)} minutes`))
-    }, timeoutMs)
-
-    let stderr = ''
-    proc.stderr.on('data', (chunk: Buffer) => {
-      const text = chunk.toString().trim()
-      stderr += text + '\n'
-      if (text) {
-        console.log(`[job-${issueNumber}] [stderr] ${text.slice(0, 300)}`)
-        logger?.event('text', `[claude:stderr] ${text.slice(0, 300)}`)
-      }
-    })
-
-    const rl = createInterface({ input: proc.stdout })
-    rl.on('line', (line) => {
-      try {
-        const evt = JSON.parse(line)
-        if (evt.type === 'assistant' && evt.message?.content) {
-          for (const block of evt.message.content) {
-            if (block.type === 'tool_use') {
-              const summary = summarizeToolInput(block.name, block.input ?? {})
-              logger?.event('tool_use', summary, { tool: block.name, input: block.input })
-            } else if (block.type === 'text' && block.text?.trim()) {
-              const preview = block.text.trim().slice(0, 200)
-              console.log(`[job-${issueNumber}] [claude] ${preview}`)
-              logger?.event('text', `[claude] ${preview}`)
-            }
-          }
-        } else if (evt.type) {
-          console.log(`[job-${issueNumber}] [event] ${evt.type}`)
-        }
-      } catch {
-        if (line.trim()) {
-          console.log(`[job-${issueNumber}] [raw] ${line.trim().slice(0, 200)}`)
-          logger?.event('text', `[claude:raw] ${line.trim().slice(0, 200)}`)
-        }
-      }
-    })
-
-    proc.on('close', (code) => {
-      clearTimeout(timer)
-      if (code === 0) {
-        resolve()
-      } else {
-        reject(new Error(
-          `Claude CLI exited with code ${code}\nSTDERR: ${stderr.slice(-2000)}`
-        ))
-      }
-    })
-
-    proc.on('error', (err) => {
-      clearTimeout(timer)
-      reject(err)
-    })
-  })
-}
+// claudeEnv, summarizeToolInput, runClaude → shared in claude-cli.ts
 
 function getChangedFiles(workDir: string): string[] {
   const modified = run('git diff --name-only HEAD', workDir).trim()
@@ -343,7 +230,7 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
     const initialTimeout = Math.min(config.claudeTimeoutMs, config.jobBudgetMs - (Date.now() - jobStart))
     await logger?.event('text', `Preparing Claude CLI prompt (${prompt.length} chars)`)
     console.log(`[job-${issueNumber}] Running Claude Code CLI with prompt: ${prompt.slice(0, 200)}...`)
-    await runClaude(prompt, workDir, issueNumber, initialTimeout, logger)
+    await runClaude({ prompt, workDir, timeoutMs: initialTimeout, logger, logPrefix: `job-${issueNumber}` })
     await logger?.event('text', 'Claude CLI finished')
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -407,7 +294,7 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
 
     try {
       const claudeTimeout = Math.min(remaining - 60_000, config.claudeTimeoutMs)
-      await runClaude(fixPrompt, workDir, issueNumber, claudeTimeout, logger)
+      await runClaude({ prompt: fixPrompt, workDir, timeoutMs: claudeTimeout, logger, logPrefix: `job-${issueNumber}` })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       console.log(`[job-${issueNumber}] Claude fix attempt ${attempt} failed: ${msg.slice(0, 200)}`)

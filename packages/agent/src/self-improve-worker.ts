@@ -1,8 +1,6 @@
 import { execSync, execFileSync } from 'node:child_process'
-import { existsSync, rmSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { ensureValidToken } from './oauth.js'
+import { existsSync, rmSync } from 'node:fs'
+import { claudeEnv } from './claude-cli.js'
 import { DbLogger } from './logger.js'
 import { validateRef, redactToken } from './sanitize.js'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -41,27 +39,7 @@ function run(cmd: string, cwd: string, timeoutMs = STEP_TIMEOUT_MS): string {
   }
 }
 
-async function claudeEnv(): Promise<NodeJS.ProcessEnv> {
-  if (process.env.CLAUDE_CREDENTIALS_JSON) {
-    const ok = await ensureValidToken()
-    if (!ok) {
-      const { CLAUDECODE: _cc, ...rest } = process.env
-      return { ...rest, CI: 'true' }
-    }
-    try {
-      const credsPath = join(homedir(), '.claude', '.credentials.json')
-      const creds = JSON.parse(readFileSync(credsPath, 'utf-8'))
-      const accessToken = creds?.claudeAiOauth?.accessToken
-      if (accessToken) {
-        const { ANTHROPIC_API_KEY: _, ...rest } = process.env
-        const { CLAUDECODE: _cc, ...rest2 } = rest
-        return { ...rest2, CLAUDE_CODE_OAUTH_TOKEN: accessToken, CI: 'true' }
-      }
-    } catch {}
-  }
-  const { CLAUDECODE: _cc, ...rest } = process.env
-  return { ...rest, CI: 'true' }
-}
+// claudeEnv → shared in claude-cli.ts
 
 function buildPrompt(input: SelfImproveInput): string {
   const scopeInstructions: Record<string, string> = {
