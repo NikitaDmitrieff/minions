@@ -110,7 +110,7 @@ async function runClaude(
   return new Promise<void>((resolve, reject) => {
     const proc = spawn(
       'claude',
-      ['--dangerously-skip-permissions', '--output-format', 'stream-json', '-p', prompt],
+      ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt],
       { cwd: workDir, env, stdio: ['pipe', 'pipe', 'pipe'] },
     )
 
