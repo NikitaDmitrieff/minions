@@ -1,6 +1,11 @@
 /**
  * Shared Claude CLI runner — single source of truth for spawning Claude Code.
  * Used by both worker.ts (agent jobs) and builder-worker.ts (build jobs).
+ *
+ * IMPORTANT: Claude CLI MUST use OAuth (Max subscription) only.
+ * ANTHROPIC_API_KEY is NEVER passed to the CLI — it is reserved for
+ * direct Anthropic SDK calls (Haiku classification, strategize, review).
+ * If OAuth is not configured or fails, the CLI job must fail loudly.
  */
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -11,65 +16,63 @@ import { ensureValidToken } from './oauth.js'
 import type { DbLogger } from './logger.js'
 
 /**
- * Build env for Claude CLI: refresh OAuth token and pass it via
- * CLAUDE_CODE_OAUTH_TOKEN so the CLI uses the Max subscription.
- * Also strip ANTHROPIC_API_KEY to ensure it doesn't fall back to API billing.
+ * Build env for Claude CLI. OAuth-only — never passes ANTHROPIC_API_KEY.
+ * Throws if OAuth credentials are missing or refresh fails.
  *
  * @param restricted - If true, only pass HOME/PATH/CI (builder sandbox mode).
  *                     If false, pass full process.env minus sensitive keys.
  */
 export async function claudeEnv(restricted = false): Promise<NodeJS.ProcessEnv> {
+  // OAuth is mandatory for CLI
+  if (!process.env.CLAUDE_CREDENTIALS_JSON) {
+    throw new Error(
+      'CLAUDE_CREDENTIALS_JSON is not set. Claude CLI requires OAuth (Max subscription). ' +
+      'ANTHROPIC_API_KEY is for SDK calls only and must never be used for CLI sessions.',
+    )
+  }
+
+  const ok = await ensureValidToken()
+  if (!ok) {
+    throw new Error(
+      'OAuth token refresh failed. Claude CLI cannot run without a valid OAuth token. ' +
+      'Check CLAUDE_CREDENTIALS_JSON and ensure the refresh token is still valid.',
+    )
+  }
+
+  const credsPath = join(homedir(), '.claude', '.credentials.json')
+  let accessToken: string | undefined
+  try {
+    const creds = JSON.parse(readFileSync(credsPath, 'utf-8'))
+    accessToken = creds?.claudeAiOauth?.accessToken
+  } catch (err) {
+    throw new Error(`Failed to read OAuth credentials from ${credsPath}: ${err}`)
+  }
+
+  if (!accessToken) {
+    throw new Error(
+      `OAuth credentials file exists but contains no accessToken. ` +
+      'Re-authenticate with Claude CLI to refresh credentials.',
+    )
+  }
+
   if (restricted) {
-    const limited: NodeJS.ProcessEnv = {
+    // Builder sandbox: minimal env
+    return {
       HOME: process.env.HOME,
       PATH: process.env.PATH,
       CI: 'true',
       NODE_ENV: 'production',
+      CLAUDE_CODE_OAUTH_TOKEN: accessToken,
     }
-
-    if (process.env.CLAUDE_CREDENTIALS_JSON) {
-      const ok = await ensureValidToken()
-      if (ok) {
-        try {
-          const credsPath = join(homedir(), '.claude', '.credentials.json')
-          const creds = JSON.parse(readFileSync(credsPath, 'utf-8'))
-          const accessToken = creds?.claudeAiOauth?.accessToken
-          if (accessToken) {
-            limited.CLAUDE_CODE_OAUTH_TOKEN = accessToken
-            return limited
-          }
-        } catch { /* fall through */ }
-      }
-    }
-
-    if (process.env.ANTHROPIC_API_KEY) {
-      limited.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
-    }
-
-    return limited
   }
 
-  // Full env mode (agent jobs)
-  if (process.env.CLAUDE_CREDENTIALS_JSON) {
-    const ok = await ensureValidToken()
-    if (!ok) {
-      console.warn('[claude] OAuth refresh failed, falling back to process.env')
-      const { CLAUDECODE: _cc, ...envWithoutClaude } = process.env
-      return { ...envWithoutClaude, CI: 'true' }
-    }
-    try {
-      const credsPath = join(homedir(), '.claude', '.credentials.json')
-      const creds = JSON.parse(readFileSync(credsPath, 'utf-8'))
-      const accessToken = creds?.claudeAiOauth?.accessToken
-      if (accessToken) {
-        const { ANTHROPIC_API_KEY: _, ...rest } = process.env
-        const { CLAUDECODE: _cc, ...rest2 } = rest
-        return { ...rest2, CLAUDE_CODE_OAUTH_TOKEN: accessToken, CI: 'true' }
-      }
-    } catch {}
+  // Full env mode: pass everything EXCEPT ANTHROPIC_API_KEY and CLAUDECODE
+  const { ANTHROPIC_API_KEY: _, CLAUDECODE: _cc, ...rest } = process.env
+  return {
+    ...rest,
+    CI: 'true',
+    CLAUDE_CODE_OAUTH_TOKEN: accessToken,
   }
-  const { CLAUDECODE: _cc, ...envWithoutClaude } = process.env
-  return { ...envWithoutClaude, CI: 'true' }
 }
 
 export function summarizeToolInput(tool: string, input: Record<string, unknown>): string {
@@ -106,11 +109,10 @@ export interface RunClaudeOptions {
 export async function runClaude(opts: RunClaudeOptions): Promise<void> {
   const { prompt, workDir, timeoutMs, logger, logPrefix = 'claude', restrictedEnv = false } = opts
   const env = await claudeEnv(restrictedEnv)
-  const authMethod = env.CLAUDE_CODE_OAUTH_TOKEN ? 'oauth' : env.ANTHROPIC_API_KEY ? 'api-key' : 'none'
   const args = ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
 
-  console.log(`[${logPrefix}] Running Claude Code CLI (stream-json, auth=${authMethod})...`)
-  await logger?.event('text', `Starting Claude CLI (auth=${authMethod}, cwd=${workDir}, prompt=${prompt.length} chars)`)
+  console.log(`[${logPrefix}] Running Claude Code CLI (stream-json, auth=oauth)...`)
+  await logger?.event('text', `Starting Claude CLI (auth=oauth, cwd=${workDir}, prompt=${prompt.length} chars)`)
 
   return new Promise<void>((resolve, reject) => {
     const proc = spawn('claude', args, { cwd: workDir, env, stdio: ['pipe', 'pipe', 'pipe'] })
