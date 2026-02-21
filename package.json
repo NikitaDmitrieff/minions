@@ -1,0 +1,17 @@
+{
+  "name": "feedback-chat",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "switch": "bash scripts/switch-worker.sh"
+  },
+  "packageManager": "npm@10.9.4",
+  "devDependencies": {
+    "turbo": "^2",
+    "typescript": "^5.7"
+  }
+}

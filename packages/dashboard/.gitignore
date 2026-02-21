@@ -1,0 +1,5 @@
+.vercel
+.next
+test-results/
+playwright-report/
+.env*.local
