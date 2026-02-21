@@ -105,14 +105,13 @@ async function runClaude(
   logger: DbLogger,
 ): Promise<void> {
   const env = await claudeEnv()
-  await logger.event('text', 'Starting Claude CLI...')
+  const authMethod = env.CLAUDE_CODE_OAUTH_TOKEN ? 'oauth' : env.ANTHROPIC_API_KEY ? 'api-key' : 'none'
+  const args = ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
+  await logger.event('text', `Starting Claude CLI (auth=${authMethod}, cwd=${workDir}, prompt=${prompt.length} chars)`)
+  await logger.event('text', `[cmd] claude ${args.slice(0, -2).join(' ')} -p <prompt>`)
 
   return new Promise<void>((resolve, reject) => {
-    const proc = spawn(
-      'claude',
-      ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt],
-      { cwd: workDir, env, stdio: ['pipe', 'pipe', 'pipe'] },
-    )
+    const proc = spawn('claude', args, { cwd: workDir, env, stdio: ['pipe', 'pipe', 'pipe'] })
 
     const timer = setTimeout(() => {
       proc.kill('SIGTERM')
