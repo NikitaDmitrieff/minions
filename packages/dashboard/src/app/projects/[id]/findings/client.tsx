@@ -242,7 +242,7 @@ export function FindingsPageClient({ projectId, findings: initialFindings }: Pro
                       <FileCode className="h-3 w-3" />
                       <span className="font-[family-name:var(--font-mono)]">
                         {finding.file_path}
-                        {finding.line_range && `:${finding.line_range.start}-${finding.line_range.end}`}
+                        {finding.line_range && `:${finding.line_range}`}
                       </span>
                     </div>
                   )}
