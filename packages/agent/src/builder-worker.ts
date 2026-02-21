@@ -171,6 +171,19 @@ ${spec}
     for (let attempt = 1; attempt <= MAX_REMEDIATION_ATTEMPTS && !validationResult.success; attempt++) {
       await logger.event('text', `${validationResult.stage} failed — remediation attempt ${attempt}/${MAX_REMEDIATION_ATTEMPTS}`)
 
+      await supabase.from('branch_events').insert({
+        project_id: projectId,
+        branch_name: branchName,
+        event_type: 'build_remediation',
+        event_data: {
+          proposal_id: proposalId,
+          attempt,
+          stage: validationResult.stage,
+          error: validationResult.errorOutput.slice(-1000),
+        },
+        actor: 'builder',
+      })
+
       const fixPrompt = `The ${validationResult.stage} step failed. Fix the errors without changing unrelated code.
 
 ## Errors
@@ -247,6 +260,19 @@ ${validationResult.errorOutput.slice(-4000)}`
     })
 
     await logger.event('text', `PR created: #${pr.number} — ${pr.html_url}`)
+
+    await supabase.from('branch_events').insert({
+      project_id: projectId,
+      branch_name: branchName,
+      event_type: 'pr_created',
+      event_data: {
+        proposal_id: proposalId,
+        pr_number: pr.number,
+        pr_url: pr.html_url,
+        head_sha: headSha,
+      },
+      actor: 'builder',
+    })
 
     // 7. Emit build_completed event with SHA
     await supabase.from('branch_events').insert({

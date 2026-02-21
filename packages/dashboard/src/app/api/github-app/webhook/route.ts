@@ -159,7 +159,7 @@ async function handleComment(
   return NextResponse.json({ status: 'retry_queued' })
 }
 
-// --- Pull request merge: detect setup PR completion ---
+// --- Pull request merge: detect setup PR completion + emit pr_merged ---
 
 async function handlePR(
   supabase: ReturnType<typeof supabaseAdmin>,
@@ -173,13 +173,40 @@ async function handlePR(
   const pr = payload.pull_request as Record<string, unknown>
   const merged = pr?.merged as boolean
   const headRef = (pr?.head as Record<string, unknown>)?.ref as string
+  const prNumber = pr?.number as number
+  const mergeCommitSha = pr?.merge_commit_sha as string | null
 
+  // Setup PR completion (existing logic)
   if (merged && headRef === 'feedback-chat/setup') {
     await supabase
       .from('projects')
       .update({ setup_status: 'complete' })
       .eq('id', projectId)
     return NextResponse.json({ status: 'setup_complete' })
+  }
+
+  // Proposal branch merged — emit pr_merged event
+  if (merged && headRef) {
+    await supabase.from('branch_events').insert({
+      project_id: projectId,
+      branch_name: headRef,
+      event_type: 'pr_merged',
+      event_data: {
+        pr_number: prNumber,
+        merge_commit_sha: mergeCommitSha,
+      },
+      actor: 'github',
+    })
+
+    // Update proposal status if linked to this branch
+    await supabase
+      .from('proposals')
+      .update({ status: 'done', completed_at: new Date().toISOString() })
+      .eq('project_id', projectId)
+      .eq('branch_name', headRef)
+      .eq('status', 'implementing')
+
+    return NextResponse.json({ status: 'pr_merged' })
   }
 
   return NextResponse.json({ status: 'ignored' })

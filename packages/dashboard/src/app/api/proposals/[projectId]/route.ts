@@ -123,6 +123,18 @@ export async function PATCH(
       outcome_notes: rejectReason || null,
     })
 
+    await supabase.from('branch_events').insert({
+      project_id: projectId,
+      branch_name: 'main',
+      event_type: 'proposal_rejected',
+      event_data: {
+        proposal_id: proposalId,
+        proposal_title: proposal.title,
+        reject_reason: rejectReason || null,
+      },
+      actor: 'user',
+    })
+
     return NextResponse.json({ ok: true, status: 'rejected' })
   }
 
@@ -170,6 +182,20 @@ export async function PATCH(
       themes: [],
       outcome_notes: userNotes || null,
       edit_distance: editDist,
+    })
+
+    await supabase.from('branch_events').insert({
+      project_id: projectId,
+      branch_name: branchName || 'main',
+      event_type: 'proposal_approved',
+      event_data: {
+        proposal_id: proposalId,
+        proposal_title: proposal.title,
+        github_issue_number: issueNumber,
+        branch_name: branchName || null,
+        user_notes: userNotes || null,
+      },
+      actor: 'user',
     })
 
     return NextResponse.json({ ok: true, status: 'approved', github_issue_number: issueNumber })

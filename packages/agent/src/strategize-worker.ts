@@ -196,7 +196,7 @@ Respond in JSON only:
     addressedFindingIds.push(...sourceFindingIds)
 
     // 6. Insert proposal with source_finding_ids
-    const { error } = await supabase.from('proposals').insert({
+    const { data: inserted, error } = await supabase.from('proposals').insert({
       project_id: projectId,
       title: raw.title,
       rationale: raw.rationale,
@@ -204,12 +204,26 @@ Respond in JSON only:
       priority: raw.priority === 'high' ? 'high' : raw.priority === 'low' ? 'low' : 'medium',
       source_finding_ids: sourceFindingIds,
       scores,
-    })
+    }).select('id').single()
 
     if (error) {
       console.error(`[strategize] Failed to insert proposal: ${error.message}`)
     } else {
       console.log(`[strategize] Created proposal: "${raw.title}" (score: ${avgScore.toFixed(2)}, findings: ${sourceFindingIds.length})`)
+
+      await supabase.from('branch_events').insert({
+        project_id: projectId,
+        branch_name: 'main',
+        event_type: 'proposal_created',
+        event_data: {
+          proposal_id: inserted.id,
+          proposal_title: raw.title,
+          scores,
+          priority: raw.priority === 'high' ? 'high' : raw.priority === 'low' ? 'low' : 'medium',
+          source_finding_count: sourceFindingIds.length,
+        },
+        actor: 'strategist',
+      })
     }
   }
 

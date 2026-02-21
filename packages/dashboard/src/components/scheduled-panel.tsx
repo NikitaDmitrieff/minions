@@ -89,6 +89,11 @@ export function ScheduledPanel({
   const [data, setData] = useState<ScheduledData | null>(initialData || null)
   const [toggling, setToggling] = useState(false)
 
+  // Sync from parent when initialData updates
+  useEffect(() => {
+    if (initialData) setData(initialData)
+  }, [initialData])
+
   useEffect(() => {
     if (initialData) return
 

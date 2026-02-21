@@ -318,6 +318,17 @@ async function processJob(supabase: Supabase, job: {
         throw new Error('Build job missing required payload fields: proposal_id, branch_name, spec')
       }
 
+      await supabase.from('branch_events').insert({
+        project_id: job.project_id,
+        branch_name: payload.branch_name,
+        event_type: 'build_started',
+        event_data: {
+          proposal_id: payload.proposal_id,
+          title: payload.title || job.issue_title,
+        },
+        actor: 'builder',
+      })
+
       const result = await runBuilderJob({
         jobId: job.id,
         projectId: job.project_id,
@@ -353,6 +364,18 @@ async function processJob(supabase: Supabase, job: {
       if (!payload.proposal_id || !payload.pr_number || !payload.head_sha || !payload.branch_name) {
         throw new Error('Review job missing required payload fields: proposal_id, pr_number, head_sha, branch_name')
       }
+
+      await supabase.from('branch_events').insert({
+        project_id: job.project_id,
+        branch_name: payload.branch_name,
+        event_type: 'review_started',
+        event_data: {
+          proposal_id: payload.proposal_id,
+          pr_number: payload.pr_number,
+          head_sha: payload.head_sha,
+        },
+        actor: 'reviewer',
+      })
 
       await runReviewerJob({
         jobId: job.id,
