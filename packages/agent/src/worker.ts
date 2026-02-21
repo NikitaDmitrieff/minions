@@ -345,13 +345,15 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
 
   // 6. Create PR if none exists
   try {
-    const existing = await findOpenPR(issueNumber)
+    const existing = await findOpenPR(issueNumber, undefined, branch)
     if (!existing) {
       await logger?.event('text', 'Creating pull request...')
       const pr = await createPR(
         issueNumber,
         `feat: ${issueTitle} (auto-implemented from #${issueNumber})`,
-        `Closes #${issueNumber}\n\nAuto-implemented by the feedback agent.`
+        `Closes #${issueNumber}\n\nAuto-implemented by the feedback agent.`,
+        undefined,
+        branch,
       )
       await logger?.event('text', `PR created: #${pr.number}`)
       console.log(`[job-${issueNumber}] Created PR #${pr.number}: ${pr.html_url}`)

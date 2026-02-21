@@ -82,6 +82,7 @@ export async function createPR(
   title: string,
   body: string,
   gh?: GitHubConfig,
+  headBranch?: string,
 ): Promise<{ number: number; html_url: string }> {
   const { token, repo } = getConfig(gh)
   const res = await ghFetch(
@@ -92,7 +93,7 @@ export async function createPR(
       body: JSON.stringify({
         title,
         body,
-        head: `feedback/issue-${issueNumber}`,
+        head: headBranch || `feedback/issue-${issueNumber}`,
         base: 'main',
       }),
     }
@@ -108,10 +109,11 @@ export async function createPR(
 export async function findOpenPR(
   issueNumber: number,
   gh?: GitHubConfig,
+  headBranch?: string,
 ): Promise<{ number: number; html_url: string } | null> {
   const { token, repo } = getConfig(gh)
   const [owner] = repo.split('/')
-  const head = `${owner}:feedback/issue-${issueNumber}`
+  const head = `${owner}:${headBranch || `feedback/issue-${issueNumber}`}`
   const res = await ghFetch(
     `https://api.github.com/repos/${repo}/pulls?state=open&head=${encodeURIComponent(head)}`,
     {
