@@ -101,15 +101,13 @@ function summarizeToolInput(tool: string, input: Record<string, unknown>): strin
 
 async function runClaude(prompt: string, workDir: string, issueNumber: number, timeoutMs: number, logger?: DbLogger): Promise<void> {
   const env = await claudeEnv()
-  console.log(`[job-${issueNumber}] Running Claude Code CLI (stream-json)...`)
-  await logger?.event('text', 'Starting Claude CLI...')
+  const authMethod = env.CLAUDE_CODE_OAUTH_TOKEN ? 'oauth' : env.ANTHROPIC_API_KEY ? 'api-key' : 'none'
+  const args = ['--dangerously-skip-permissions', '--verbose', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
+  console.log(`[job-${issueNumber}] Running Claude Code CLI (stream-json, auth=${authMethod})...`)
+  await logger?.event('text', `Starting Claude CLI (auth=${authMethod}, cwd=${workDir}, prompt=${prompt.length} chars)`)
 
   return new Promise<void>((resolve, reject) => {
-    const proc = spawn(
-      'claude',
-      ['--dangerously-skip-permissions', '--output-format', 'stream-json', '-p', prompt],
-      { cwd: workDir, env, stdio: ['pipe', 'pipe', 'pipe'] }
-    )
+    const proc = spawn('claude', args, { cwd: workDir, env, stdio: ['pipe', 'pipe', 'pipe'] })
 
     const timer = setTimeout(() => {
       proc.kill('SIGTERM')
@@ -117,27 +115,38 @@ async function runClaude(prompt: string, workDir: string, issueNumber: number, t
     }, timeoutMs)
 
     let stderr = ''
-    proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    proc.stderr.on('data', (chunk: Buffer) => {
+      const text = chunk.toString().trim()
+      stderr += text + '\n'
+      if (text) {
+        console.log(`[job-${issueNumber}] [stderr] ${text.slice(0, 300)}`)
+        logger?.event('text', `[claude:stderr] ${text.slice(0, 300)}`)
+      }
+    })
 
     const rl = createInterface({ input: proc.stdout })
     rl.on('line', (line) => {
       try {
         const evt = JSON.parse(line)
-        // Tool use events
         if (evt.type === 'assistant' && evt.message?.content) {
           for (const block of evt.message.content) {
             if (block.type === 'tool_use') {
               const summary = summarizeToolInput(block.name, block.input ?? {})
               logger?.event('tool_use', summary, { tool: block.name, input: block.input })
+            } else if (block.type === 'text' && block.text?.trim()) {
+              const preview = block.text.trim().slice(0, 200)
+              console.log(`[job-${issueNumber}] [claude] ${preview}`)
+              logger?.event('text', `[claude] ${preview}`)
             }
           }
-        }
-        // Tool result events
-        if (evt.type === 'result' && evt.subtype === 'tool_result') {
-          // Minimal logging — we mostly care about tool_use, not every result
+        } else if (evt.type) {
+          console.log(`[job-${issueNumber}] [event] ${evt.type}`)
         }
       } catch {
-        // Non-JSON line, ignore
+        if (line.trim()) {
+          console.log(`[job-${issueNumber}] [raw] ${line.trim().slice(0, 200)}`)
+          logger?.event('text', `[claude:raw] ${line.trim().slice(0, 200)}`)
+        }
       }
     })
 
