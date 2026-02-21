@@ -53,7 +53,7 @@ export async function GET(
   // Fetch pending/queued jobs for "scheduled" view
   const { data: pendingJobs } = await supabase
     .from('job_queue')
-    .select('id, job_type, status, issue_title, created_at')
+    .select('id, job_type, status, issue_title, created_at, locked_at, worker_id')
     .eq('project_id', projectId)
     .in('status', ['pending', 'processing'])
     .order('created_at', { ascending: true })

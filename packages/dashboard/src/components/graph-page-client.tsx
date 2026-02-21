@@ -15,7 +15,7 @@ interface GraphData {
   branches: Branch[]
   unbranched: BranchEvent[]
   scheduled: {
-    pending_jobs: Array<{ id: string; job_type: string; status: string; issue_title: string; created_at: string }>
+    pending_jobs: Array<{ id: string; job_type: string; status: string; issue_title: string; created_at: string; locked_at: string | null; worker_id: string | null }>
     scout_schedule: string
     paused: boolean
   }
