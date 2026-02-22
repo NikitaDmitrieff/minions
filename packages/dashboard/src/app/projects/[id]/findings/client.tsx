@@ -2,11 +2,12 @@
 
 import { useState, useMemo } from 'react'
 import { Search, AlertTriangle, CheckCircle2, XCircle, FileCode, ChevronDown, ChevronUp } from 'lucide-react'
-import type { Finding, FindingCategory, FindingSeverity, FindingStatus } from '@/lib/types'
+import type { Finding, FindingCategory, FindingSeverity, FindingStatus, HealthSnapshot } from '@/lib/types'
 
 type Props = {
   projectId: string
   findings: Finding[]
+  snapshots: HealthSnapshot[]
 }
 
 const CATEGORIES: { key: FindingCategory; label: string }[] = [
@@ -35,7 +36,96 @@ const STATUS_ICONS: Record<string, typeof Search> = {
   dismissed: XCircle,
 }
 
-export function FindingsPageClient({ projectId, findings: initialFindings }: Props) {
+const BREAKDOWN_LABELS: Record<string, string> = {
+  bug_risk: 'Bug Risk',
+  tech_debt: 'Tech Debt',
+  security: 'Security',
+  performance: 'Performance',
+  accessibility: 'Accessibility',
+  testing_gap: 'Testing',
+  dx: 'DX',
+}
+
+function scoreColor(score: number): string {
+  if (score >= 70) return 'text-success'
+  if (score >= 40) return 'text-amber-400'
+  return 'text-red-400'
+}
+
+function MiniSparkline({ snapshots }: { snapshots: HealthSnapshot[] }) {
+  if (snapshots.length < 2) return null
+  const w = 48, h = 20, pad = 2
+  const scores = snapshots.map(s => s.score)
+  const min = Math.min(...scores) - 5
+  const max = Math.max(...scores) + 5
+  const range = max - min || 1
+  const pts = scores.map((s, i) => {
+    const x = pad + (i / (scores.length - 1)) * (w - pad * 2)
+    const y = h - pad - ((s - min) / range) * (h - pad * 2)
+    return `${x},${y}`
+  })
+  const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p}`).join(' ')
+  return (
+    <svg width={w} height={h} className="overflow-visible">
+      <path d={d} fill="none" stroke="currentColor" strokeWidth={1.5}
+        className={scoreColor(scores[scores.length - 1])} />
+    </svg>
+  )
+}
+
+function HealthSummaryBar({
+  snapshots,
+  onCategoryClick,
+  activeCategoryFilter,
+}: {
+  snapshots: HealthSnapshot[]
+  onCategoryClick: (cat: FindingCategory | null) => void
+  activeCategoryFilter: FindingCategory | null
+}) {
+  const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null
+  if (!latest) return null
+
+  const breakdown = latest.breakdown || {}
+
+  return (
+    <div className="mb-6">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className={`text-2xl font-bold tabular-nums ${scoreColor(latest.score)}`}>
+            {latest.score}
+          </span>
+          <span className="text-xs text-muted">/100</span>
+        </div>
+        <MiniSparkline snapshots={snapshots} />
+      </div>
+      <div className="grid grid-cols-7 gap-1.5">
+        {Object.entries(BREAKDOWN_LABELS).map(([key, label]) => {
+          const entry = breakdown[key]
+          const count = entry?.count ?? 0
+          const isActive = activeCategoryFilter === key
+          return (
+            <button
+              key={key}
+              onClick={() => onCategoryClick(isActive ? null : key as FindingCategory)}
+              className={`rounded-lg p-2 text-center transition-colors ${
+                isActive
+                  ? 'bg-accent/20 ring-1 ring-accent/30'
+                  : 'bg-white/[0.03] hover:bg-white/[0.06]'
+              }`}
+            >
+              <p className="text-[10px] text-muted">{label}</p>
+              <p className={`text-sm font-semibold tabular-nums ${count > 0 ? 'text-fg' : 'text-dim'}`}>
+                {count}
+              </p>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+export function FindingsPageClient({ projectId, findings: initialFindings, snapshots }: Props) {
   const [findings, setFindings] = useState(initialFindings)
   const [categoryFilter, setCategoryFilter] = useState<FindingCategory | null>(null)
   const [severityFilter, setSeverityFilter] = useState<FindingSeverity | null>(null)
@@ -94,13 +184,20 @@ export function FindingsPageClient({ projectId, findings: initialFindings }: Pro
 
   return (
     <>
-      <div className="mb-8 flex items-center gap-3">
+      <div className="mb-6 flex items-center gap-3">
         <Search className="h-5 w-5 text-accent" />
         <h1 className="text-lg font-medium text-fg">Findings</h1>
         <span className="rounded-full bg-surface px-2 py-0.5 text-xs tabular-nums text-muted">
           {filtered.length}
         </span>
       </div>
+
+      {/* Health summary bar */}
+      <HealthSummaryBar
+        snapshots={snapshots}
+        onCategoryClick={setCategoryFilter}
+        activeCategoryFilter={categoryFilter}
+      />
 
       {/* Filters */}
       <div className="mb-6 space-y-3">
