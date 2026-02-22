@@ -1,10 +1,10 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { Brain, Compass, Loader2, Plus, Sparkles, X, Clock, Shield, GitBranch, Pause, Play, Search, Check } from 'lucide-react'
+import { Brain, Compass, Loader2, Plus, Sparkles, X, Clock, Shield, GitBranch, Pause, Play, Search, Check, Lightbulb } from 'lucide-react'
 import { SetupSection } from '@/components/setup-section'
 import { triggerScout } from '@/app/projects/[id]/actions'
-import type { SetupStatus, AutonomyMode } from '@/lib/types'
+import type { SetupStatus, AutonomyMode, UserIdea } from '@/lib/types'
 
 type Props = {
   projectId: string
@@ -25,6 +25,7 @@ type Props = {
   initialAutonomyMode: AutonomyMode
   initialMaxBranches: number
   initialPaused: boolean
+  initialIdeas: UserIdea[]
 }
 
 const SCHEDULE_OPTIONS = [
@@ -58,7 +59,16 @@ export function SettingsPageClient({
   initialAutonomyMode,
   initialMaxBranches,
   initialPaused,
+  initialIdeas,
 }: Props) {
+  // Tab state
+  const [tab, setTab] = useState<'config' | 'input'>('config')
+
+  // Ideas state
+  const [ideas, setIdeas] = useState(initialIdeas)
+  const [ideaText, setIdeaText] = useState('')
+  const [submittingIdea, setSubmittingIdea] = useState(false)
+
   // Product context state
   const [context, setContext] = useState(initialContext)
   const [editingContext, setEditingContext] = useState(false)
@@ -188,9 +198,50 @@ export function SettingsPageClient({
     saveField('paused', newValue)
   }, [paused, saveField])
 
+  async function submitIdea() {
+    if (!ideaText.trim()) return
+    setSubmittingIdea(true)
+    try {
+      const res = await fetch(`/api/ideas/${projectId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: ideaText.trim() }),
+      })
+      if (res.ok) {
+        const json = await res.json()
+        setIdeas(prev => [json.idea, ...prev])
+        setIdeaText('')
+      }
+    } finally {
+      setSubmittingIdea(false)
+    }
+  }
+
   return (
-    <div className="space-y-8">
-      {/* Section 1: Product Context */}
+    <>
+      {/* Internal tab bar */}
+      <div className="mb-8 flex items-center gap-1 rounded-2xl border border-white/[0.08] bg-white/[0.04] p-1 backdrop-blur-xl w-fit">
+        <button
+          onClick={() => setTab('config')}
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+            tab === 'config' ? 'bg-white/[0.08] text-fg' : 'text-muted hover:text-fg'
+          }`}
+        >
+          Configuration
+        </button>
+        <button
+          onClick={() => setTab('input')}
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+            tab === 'input' ? 'bg-white/[0.08] text-fg' : 'text-muted hover:text-fg'
+          }`}
+        >
+          Your Input
+        </button>
+      </div>
+
+      {tab === 'config' && (
+      <div className="space-y-8">
+        {/* Section 1: Product Context */}
       <div className="glass-card p-5">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -267,57 +318,6 @@ export function SettingsPageClient({
             )}
           </div>
         )}
-      </div>
-
-      {/* Section 2: Strategic Nudges */}
-      <div className="glass-card p-5">
-        <div className="mb-4 flex items-center gap-2">
-          <Compass className="h-4 w-4 text-accent" />
-          <h2 className="text-sm font-semibold text-fg">Strategic Nudges</h2>
-        </div>
-
-        <p className="mb-3 text-xs text-muted">
-          Standing directives that guide all future proposal generation. The AI strategist treats these as high-priority constraints.
-        </p>
-
-        {nudges.length > 0 && (
-          <div className="mb-3 space-y-1.5">
-            {nudges.map((nudge, i) => (
-              <div
-                key={i}
-                className="flex items-center justify-between rounded-lg bg-white/[0.04] px-3 py-2"
-              >
-                <span className="text-sm text-fg">{nudge}</span>
-                <button
-                  onClick={() => removeNudge(i)}
-                  disabled={savingNudges}
-                  className="ml-2 rounded p-1 text-muted transition-colors hover:bg-white/[0.06] hover:text-fg disabled:opacity-50"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={newNudge}
-            onChange={e => setNewNudge(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') addNudge() }}
-            placeholder="e.g., Focus on mobile UX, Ignore performance for now..."
-            className="flex-1 rounded-lg bg-white/[0.04] px-3 py-2 text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
-          />
-          <button
-            onClick={addNudge}
-            disabled={!newNudge.trim() || savingNudges}
-            className="flex items-center gap-1 rounded-lg bg-accent/10 px-3 py-2 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
-          >
-            <Plus className="h-3 w-3" />
-            Add
-          </button>
-        </div>
       </div>
 
       {/* Section 3: Scout Schedule */}
@@ -476,5 +476,124 @@ export function SettingsPageClient({
         />
       </div>
     </div>
+      )}
+
+      {tab === 'input' && (
+        <div className="space-y-8">
+          {/* Strategic Nudges (moved from config) */}
+          <div className="glass-card p-5">
+            <div className="mb-4 flex items-center gap-2">
+              <Compass className="h-4 w-4 text-accent" />
+              <h2 className="text-sm font-semibold text-fg">Strategic Nudges</h2>
+            </div>
+
+            <p className="mb-3 text-xs text-muted">
+              Standing directives that guide all future proposal generation. The AI strategist treats these as high-priority constraints.
+            </p>
+
+            {nudges.length > 0 && (
+              <div className="mb-3 space-y-1.5">
+                {nudges.map((nudge, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between rounded-lg bg-white/[0.04] px-3 py-2"
+                  >
+                    <span className="text-sm text-fg">{nudge}</span>
+                    <button
+                      onClick={() => removeNudge(i)}
+                      disabled={savingNudges}
+                      className="ml-2 rounded p-1 text-muted transition-colors hover:bg-white/[0.06] hover:text-fg disabled:opacity-50"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={newNudge}
+                onChange={e => setNewNudge(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') addNudge() }}
+                placeholder="e.g., Focus on mobile UX, Ignore performance for now..."
+                className="flex-1 rounded-lg bg-white/[0.04] px-3 py-2 text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+              <button
+                onClick={addNudge}
+                disabled={!newNudge.trim() || savingNudges}
+                className="flex items-center gap-1 rounded-lg bg-accent/10 px-3 py-2 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
+              >
+                <Plus className="h-3 w-3" />
+                Add
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Idea */}
+          <div className="glass-card p-5">
+            <div className="mb-4 flex items-center gap-2">
+              <Lightbulb className="h-4 w-4 text-accent" />
+              <h2 className="text-sm font-semibold text-fg">Quick Idea</h2>
+            </div>
+            <p className="mb-3 text-xs text-muted">
+              Drop a feature direction or improvement idea. The strategist will consider it in the next run.
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={ideaText}
+                onChange={e => setIdeaText(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') submitIdea() }}
+                placeholder="e.g., Add dark mode, Optimize page load, Add API rate limiting..."
+                className="flex-1 rounded-lg bg-white/[0.04] px-3 py-2.5 text-sm text-fg placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+              <button
+                onClick={submitIdea}
+                disabled={!ideaText.trim() || submittingIdea}
+                className="flex items-center gap-1.5 rounded-lg bg-accent/10 px-4 py-2.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
+              >
+                {submittingIdea ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                Submit
+              </button>
+            </div>
+          </div>
+
+          {/* Recent Ideas */}
+          <div className="glass-card p-5">
+            <h2 className="mb-3 text-sm font-semibold text-fg">Your Ideas</h2>
+            {ideas.length === 0 ? (
+              <p className="py-6 text-center text-xs text-muted">
+                No ideas submitted yet. Drop one above.
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {ideas.map(idea => (
+                  <div
+                    key={idea.id}
+                    className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="text-sm text-fg">{idea.text}</span>
+                      <span className="ml-2 text-[11px] text-dim">
+                        {new Date(idea.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <span className={`ml-3 shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                      idea.status === 'incorporated' ? 'bg-green-400/10 text-green-400'
+                        : idea.status === 'dismissed' ? 'bg-white/[0.06] text-muted'
+                        : 'bg-amber-400/10 text-amber-400'
+                    }`}>
+                      {idea.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   )
 }

@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
-import type { SetupStatus, AutonomyMode } from '@/lib/types'
+import type { SetupStatus, AutonomyMode, UserIdea } from '@/lib/types'
 import { SettingsPageClient } from './client'
 
 export default async function SettingsPage({
@@ -16,11 +16,19 @@ export default async function SettingsPage({
   const { apiKey } = await searchParams
   const supabase = await createClient()
 
-  const { data: project } = await supabase
-    .from('projects')
-    .select('id, name, github_repo, product_context, strategic_nudges, webhook_secret, github_installation_id, setup_status, setup_pr_url, setup_error, setup_progress, scout_schedule, autonomy_mode, max_concurrent_branches, paused')
-    .eq('id', id)
-    .single()
+  const [{ data: project }, { data: ideas }] = await Promise.all([
+    supabase
+      .from('projects')
+      .select('id, name, github_repo, product_context, strategic_nudges, webhook_secret, github_installation_id, setup_status, setup_pr_url, setup_error, setup_progress, scout_schedule, autonomy_mode, max_concurrent_branches, paused')
+      .eq('id', id)
+      .single(),
+    supabase
+      .from('user_ideas')
+      .select('*')
+      .eq('project_id', id)
+      .order('created_at', { ascending: false })
+      .limit(50),
+  ])
 
   if (!project) notFound()
 
@@ -65,6 +73,7 @@ export default async function SettingsPage({
         initialAutonomyMode={(project.autonomy_mode as AutonomyMode) ?? 'audit'}
         initialMaxBranches={(project.max_concurrent_branches as number) ?? 3}
         initialPaused={(project.paused as boolean) ?? false}
+        initialIdeas={(ideas ?? []) as UserIdea[]}
       />
     </div>
   )
