@@ -31,6 +31,7 @@ type Props = {
   proposals: Proposal[]
   runs: Run[]
   activeJobs: Job[]
+  sourceFindings: { id: string; title: string; category: string }[]
 }
 
 const TABS = [
@@ -40,7 +41,7 @@ const TABS = [
 
 type TabKey = (typeof TABS)[number]['key']
 
-export function ProposalsPageClient({ projectId, githubRepo, proposals, runs, activeJobs }: Props) {
+export function ProposalsPageClient({ projectId, githubRepo, proposals, runs, activeJobs, sourceFindings }: Props) {
   const [activeTab, setActiveTab] = useState<TabKey>('proposals')
 
   return (
@@ -71,7 +72,7 @@ export function ProposalsPageClient({ projectId, githubRepo, proposals, runs, ac
 
       {/* Tab content */}
       {activeTab === 'proposals' ? (
-        <ProposalsTab projectId={projectId} githubRepo={githubRepo} proposals={proposals} />
+        <ProposalsTab projectId={projectId} githubRepo={githubRepo} proposals={proposals} sourceFindings={sourceFindings} />
       ) : (
         <PipelineTab projectId={projectId} githubRepo={githubRepo} proposals={proposals} runs={runs} activeJobs={activeJobs} />
       )}

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Lightbulb, Loader2, X } from 'lucide-react'
 import { ProposalSlideOver } from '@/components/proposal-slide-over'
 import type { Proposal } from '@/lib/types'
@@ -9,6 +9,7 @@ type Props = {
   projectId: string
   githubRepo: string | null
   proposals: Proposal[]
+  sourceFindings: { id: string; title: string; category: string }[]
 }
 
 const PRIORITY_DOT: Record<string, string> = {
@@ -31,9 +32,10 @@ function avgScore(scores: Proposal['scores']): number {
   return vals.reduce((a, b) => a + b, 0) / vals.length
 }
 
-export function ProposalsTab({ projectId, githubRepo, proposals: initialProposals }: Props) {
+export function ProposalsTab({ projectId, githubRepo, proposals: initialProposals, sourceFindings }: Props) {
   const [proposals, setProposals] = useState(initialProposals)
   const [selected, setSelected] = useState<Proposal | null>(null)
+  const findingsMap = useMemo(() => new Map(sourceFindings.map(f => [f.id, f])), [sourceFindings])
 
   // Create proposal state
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -80,7 +82,7 @@ export function ProposalsTab({ projectId, githubRepo, proposals: initialProposal
             return (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1)
           })
           .map(p => (
-            <ProposalCard key={p.id} proposal={p} onClick={() => setSelected(p)} />
+            <ProposalCard key={p.id} proposal={p} onClick={() => setSelected(p)} sourceFindings={findingsMap} />
           ))}
       </Section>
 
@@ -88,7 +90,7 @@ export function ProposalsTab({ projectId, githubRepo, proposals: initialProposal
       {active.length > 0 && (
         <Section title="In Progress" count={active.length}>
           {active.map(p => (
-            <ProposalCard key={p.id} proposal={p} onClick={() => setSelected(p)} />
+            <ProposalCard key={p.id} proposal={p} onClick={() => setSelected(p)} sourceFindings={findingsMap} />
           ))}
         </Section>
       )}
@@ -97,7 +99,7 @@ export function ProposalsTab({ projectId, githubRepo, proposals: initialProposal
       {completed.length > 0 && (
         <Section title="Recently Completed" count={completed.length}>
           {completed.map(p => (
-            <ProposalCard key={p.id} proposal={p} onClick={() => setSelected(p)} />
+            <ProposalCard key={p.id} proposal={p} onClick={() => setSelected(p)} sourceFindings={findingsMap} />
           ))}
         </Section>
       )}
@@ -159,7 +161,7 @@ function Section({
   )
 }
 
-function ProposalCard({ proposal, onClick }: { proposal: Proposal; onClick: () => void }) {
+function ProposalCard({ proposal, onClick, sourceFindings }: { proposal: Proposal; onClick: () => void; sourceFindings?: Map<string, { id: string; title: string; category: string }> }) {
   const score = avgScore(proposal.scores)
   const statusColors: Record<string, string> = {
     draft: 'text-muted',
@@ -178,6 +180,22 @@ function ProposalCard({ proposal, onClick }: { proposal: Proposal; onClick: () =
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-fg">{proposal.title}</p>
         <p className="mt-0.5 truncate text-xs text-dim">{proposal.rationale.slice(0, 80)}</p>
+        {proposal.source_finding_ids && proposal.source_finding_ids.length > 0 && sourceFindings && (
+          <div className="mt-1 flex items-center gap-1 flex-wrap">
+            {proposal.source_finding_ids.slice(0, 3).map(fid => {
+              const finding = sourceFindings.get(fid)
+              if (!finding) return null
+              return (
+                <span key={fid} className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] text-muted">
+                  {finding.category.replace('_', ' ')}
+                </span>
+              )
+            })}
+            {proposal.source_finding_ids.length > 3 && (
+              <span className="text-[9px] text-dim">+{proposal.source_finding_ids.length - 3}</span>
+            )}
+          </div>
+        )}
       </div>
       {Object.keys(proposal.scores).length > 0 ? (
         score > 0 && (

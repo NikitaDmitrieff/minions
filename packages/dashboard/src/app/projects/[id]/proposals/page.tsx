@@ -23,6 +23,7 @@ export default async function ProposalsPage({
     { data: proposals },
     { data: runs },
     { data: jobs },
+    { data: allFindings },
   ] = await Promise.all([
     supabase
       .from('proposals')
@@ -40,7 +41,17 @@ export default async function ProposalsPage({
       .select('id, project_id, job_type, status, github_issue_number')
       .eq('project_id', id)
       .in('status', ['pending', 'processing']),
+    supabase
+      .from('findings')
+      .select('id, title, category')
+      .eq('project_id', id),
   ])
+
+  const findingsForSource = (allFindings ?? []).map((f: { id: string; title: string; category: string }) => ({
+    id: f.id,
+    title: f.title,
+    category: f.category,
+  }))
 
   return (
     <div className="mx-auto max-w-6xl px-6 pt-10 pb-16">
@@ -50,6 +61,7 @@ export default async function ProposalsPage({
         proposals={(proposals ?? []) as Proposal[]}
         runs={runs ?? []}
         activeJobs={jobs ?? []}
+        sourceFindings={findingsForSource}
       />
     </div>
   )
