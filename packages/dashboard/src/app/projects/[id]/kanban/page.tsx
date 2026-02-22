@@ -6,5 +6,5 @@ export default async function KanbanPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = await params
-  redirect(`/projects/${id}/minions`)
+  redirect(`/projects/${id}/proposals`)
 }
