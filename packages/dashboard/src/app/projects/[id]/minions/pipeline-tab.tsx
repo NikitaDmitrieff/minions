@@ -81,6 +81,9 @@ function StageBadge({ stage, result }: { stage: string; result: string | null })
   if (stage === 'queued') {
     return <span className="flex items-center gap-1 text-[11px] font-medium text-muted"><Clock className="h-3 w-3" /> Queued</span>
   }
+  if (stage === 'preview_ready') {
+    return <span className="flex items-center gap-1 text-[11px] font-medium text-purple-400"><CheckCircle2 className="h-3 w-3" /> Preview Ready</span>
+  }
   return <span className="text-[11px] font-medium text-muted">{stage}</span>
 }
 

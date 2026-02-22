@@ -119,7 +119,7 @@ function extractBranchName(issueBody: string): string | null {
   return match ? match[1].trim() : null
 }
 
-export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ success: boolean }> {
+export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ success: boolean; prNumber?: number }> {
   const config = loadConfig()
   const { issueNumber, issueTitle, issueBody } = input
   const workDir = `/tmp/job-${issueNumber}`
@@ -344,6 +344,7 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
   }
 
   // 6. Create PR if none exists
+  let prNumber: number | undefined
   try {
     const existing = await findOpenPR(issueNumber, undefined, branch)
     if (!existing) {
@@ -355,9 +356,11 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
         undefined,
         branch,
       )
+      prNumber = pr.number
       await logger?.event('text', `PR created: #${pr.number}`)
       console.log(`[job-${issueNumber}] Created PR #${pr.number}: ${pr.html_url}`)
     } else {
+      prNumber = existing.number
       await logger?.event('text', `PR already exists: #${existing.number}`)
       console.log(`[job-${issueNumber}] PR already exists: #${existing.number}`)
     }
@@ -379,7 +382,7 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
   cleanup(workDir)
   await logger?.event('text', 'Done — PR created, awaiting Vercel preview')
   console.log(`[job-${issueNumber}] Done — PR created, awaiting preview`)
-  return { success: true }
+  return { success: true, prNumber }
 }
 
 // --- Managed worker mode ---
@@ -431,7 +434,12 @@ export async function runManagedJob(input: ManagedJobInput): Promise<void> {
 
     await input.supabase
       .from('pipeline_runs')
-      .update({ stage: 'validating', completed_at: new Date().toISOString(), result: 'success' })
+      .update({
+        stage: 'deployed',
+        completed_at: new Date().toISOString(),
+        result: 'success',
+        ...(result.prNumber ? { github_pr_number: result.prNumber } : {}),
+      })
       .eq('id', input.runId)
 
     await logger.log('Job completed successfully')

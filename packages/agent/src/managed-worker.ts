@@ -401,7 +401,7 @@ async function processJob(supabase: Supabase, job: {
       // Complete proposal lifecycle based on review outcome
       if (reviewResult.approved) {
         await supabase.from('proposals')
-          .update({ status: 'done' })
+          .update({ status: 'done', completed_at: new Date().toISOString() })
           .eq('id', payload.proposal_id)
         console.log(`[${WORKER_ID}] Review approved — proposal ${payload.proposal_id} marked as done`)
 
@@ -448,6 +448,7 @@ async function processJob(supabase: Supabase, job: {
     console.error(`[${WORKER_ID}] Job ${job.id} failed:`, message)
 
     const isOAuthError = /authentication_error|invalid_grant|\b401\b|OAuth/i.test(message)
+    const isPermanentFailure = isOAuthError || (job.attempt_count ?? 0) + 1 >= MAX_ATTEMPTS
 
     try {
       if (isOAuthError) {
@@ -484,6 +485,25 @@ async function processJob(supabase: Supabase, job: {
           })
           .eq('id', job.id)
         await handleFailedJob(supabase, job)
+      }
+
+      // Mark pipeline_run as failed for build/review jobs on permanent failure
+      if (isPermanentFailure && ['build', 'review'].includes(job.job_type ?? '')) {
+        const { data: failedRun } = await supabase
+          .from('pipeline_runs')
+          .select('id')
+          .eq('project_id', job.project_id)
+          .eq('github_issue_number', job.github_issue_number)
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .single()
+
+        if (failedRun) {
+          await supabase.from('pipeline_runs')
+            .update({ result: 'failed', completed_at: new Date().toISOString() })
+            .eq('id', failedRun.id)
+          console.log(`[${WORKER_ID}] Marked pipeline_run ${failedRun.id} as failed`)
+        }
       }
     } catch (updateErr) {
       console.error(`[${WORKER_ID}] Failed to update job ${job.id} status:`, updateErr)
