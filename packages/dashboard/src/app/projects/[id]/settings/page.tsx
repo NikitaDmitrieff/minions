@@ -19,7 +19,7 @@ export default async function SettingsPage({
   const [{ data: project }, { data: ideas }] = await Promise.all([
     supabase
       .from('projects')
-      .select('id, name, github_repo, product_context, strategic_nudges, webhook_secret, github_installation_id, setup_status, setup_pr_url, setup_error, setup_progress, scout_schedule, autonomy_mode, max_concurrent_branches, paused')
+      .select('id, name, github_repo, product_context, strategic_nudges, webhook_secret, github_installation_id, setup_status, setup_pr_url, setup_error, setup_progress, scout_schedule, autonomy_mode, max_concurrent_branches, paused, wild_card_frequency')
       .eq('id', id)
       .single(),
     supabase
@@ -73,6 +73,7 @@ export default async function SettingsPage({
         initialAutonomyMode={(project.autonomy_mode as AutonomyMode) ?? 'audit'}
         initialMaxBranches={(project.max_concurrent_branches as number) ?? 3}
         initialPaused={(project.paused as boolean) ?? false}
+        initialWildCardFrequency={(project.wild_card_frequency as number) ?? 0.1}
         initialIdeas={(ideas ?? []) as UserIdea[]}
       />
     </div>

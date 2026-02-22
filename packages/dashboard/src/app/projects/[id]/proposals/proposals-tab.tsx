@@ -178,7 +178,14 @@ function ProposalCard({ proposal, onClick, sourceFindings }: { proposal: Proposa
     >
       <div className={`h-2 w-2 shrink-0 rounded-full ${PRIORITY_DOT[proposal.priority] ?? 'bg-gray-400'}`} />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-fg">{proposal.title}</p>
+        <div className="flex items-center gap-0">
+          <p className="truncate text-sm font-medium text-fg">{proposal.title}</p>
+          {proposal.is_wild_card && (
+            <span className="ml-2 inline-flex shrink-0 rounded-full bg-purple-400/10 px-1.5 py-0.5 text-[9px] font-medium text-purple-400">
+              Wild Card
+            </span>
+          )}
+        </div>
         <p className="mt-0.5 truncate text-xs text-dim">{proposal.rationale.slice(0, 80)}</p>
         {proposal.source_finding_ids && proposal.source_finding_ids.length > 0 && sourceFindings && (
           <div className="mt-1 flex items-center gap-1 flex-wrap">

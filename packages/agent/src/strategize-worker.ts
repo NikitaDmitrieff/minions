@@ -7,6 +7,7 @@ type Supabase = SupabaseClient<any, any, any>
 export interface StrategizeInput {
   jobId: string
   projectId: string
+  cycleId?: string | null
   supabase: Supabase
 }
 
@@ -31,7 +32,7 @@ export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
     { data: memory },
     { data: pendingIdeas },
   ] = await Promise.all([
-    supabase.from('projects').select('name, github_repo, product_context, strategic_nudges').eq('id', projectId).single(),
+    supabase.from('projects').select('name, github_repo, product_context, strategic_nudges, wild_card_frequency').eq('id', projectId).single(),
     supabase.from('findings').select('id, category, severity, title, description, file_path').eq('project_id', projectId).eq('status', 'open').order('severity', { ascending: true }).limit(30),
     supabase.from('proposals').select('title, status, reject_reason').eq('project_id', projectId).order('created_at', { ascending: false }).limit(20),
     supabase.from('strategy_memory').select('title, event_type, themes, outcome_notes').eq('project_id', projectId).order('created_at', { ascending: false }).limit(30),
@@ -81,7 +82,18 @@ export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
 
   const anthropic = getAnthropicClient()
 
+  // 2.5. Wild card mode check
+  const wildCardFrequency = (project as Record<string, unknown>).wild_card_frequency as number ?? 0.2
+  const isWildCard = Math.random() < wildCardFrequency
+  if (isWildCard) {
+    console.log('[strategize] Wild card cycle — requesting ambitious proposal')
+  }
+
   // 3. Generate proposals from findings
+  const wildCardInstructions = isWildCard
+    ? `\n\nIMPORTANT: This is a WILD CARD cycle. Instead of incremental fixes, propose ONE ambitious architectural change or innovative feature. Think big — something that would meaningfully improve the codebase or product even if it's more complex to implement. Be bold.`
+    : ''
+
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 2000,
@@ -100,13 +112,13 @@ ${existingProposals}
 ${memoryContext}
 ${nudgesContext ? `\n## Strategic directives from the product owner (HIGH PRIORITY — follow these)\n${nudgesContext}\n` : ''}
 ${ideasContext ? `\n## User-submitted ideas to consider\n${ideasContext}\n` : ''}
-Based on the findings and context above, identify 1-${MAX_PROPOSALS_PER_RUN} concrete improvement proposals. For each:
+Based on the findings and context above, identify ${isWildCard ? '1' : `1-${MAX_PROPOSALS_PER_RUN}`} concrete improvement proposals. For each:
 - Prioritize critical and high-severity findings
 - Group related findings into a single coherent proposal when possible
 - If no findings exist yet, derive proposals from the product vision, strategic directives, and user ideas
 - Do NOT re-propose anything that was recently rejected
 - Do NOT propose what already exists in existing proposals
-- Be specific and actionable (not vague like "improve UX")
+- Be specific and actionable (not vague like "improve UX")${wildCardInstructions}
 
 Respond in JSON format:
 \`\`\`json
@@ -195,7 +207,7 @@ Respond in JSON only:
 
     addressedFindingIds.push(...sourceFindingIds)
 
-    // 6. Insert proposal with source_finding_ids
+    // 6. Insert proposal with source_finding_ids, cycle_id, and wild card flag
     const { data: inserted, error } = await supabase.from('proposals').insert({
       project_id: projectId,
       title: raw.title,
@@ -204,6 +216,8 @@ Respond in JSON only:
       priority: raw.priority === 'high' ? 'high' : raw.priority === 'low' ? 'low' : 'medium',
       source_finding_ids: sourceFindingIds,
       scores,
+      cycle_id: input.cycleId || null,
+      is_wild_card: isWildCard,
     }).select('id').single()
 
     if (error) {

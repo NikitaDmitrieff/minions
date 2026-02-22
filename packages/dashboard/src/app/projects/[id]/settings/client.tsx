@@ -25,6 +25,7 @@ type Props = {
   initialAutonomyMode: AutonomyMode
   initialMaxBranches: number
   initialPaused: boolean
+  initialWildCardFrequency: number
   initialIdeas: UserIdea[]
 }
 
@@ -35,9 +36,9 @@ const SCHEDULE_OPTIONS = [
 ]
 
 const AUTONOMY_OPTIONS: { value: AutonomyMode; label: string; description: string }[] = [
-  { value: 'audit', label: 'Audit', description: 'Scout and Strategist auto-run. Builder and merge need your approval.' },
-  { value: 'assist', label: 'Assist', description: 'Low-risk changes auto-build. High-risk and merge need your approval.' },
-  { value: 'automate', label: 'Automate', description: 'Full automation. Auto-merge if tests pass and Reviewer approves.' },
+  { value: 'audit', label: 'Audit', description: 'Scout and strategize auto-run. All builds and merges need your approval.' },
+  { value: 'assist', label: 'Assist', description: 'Low-risk proposals auto-approved and built. High-risk files and merges need your approval.' },
+  { value: 'automate', label: 'Automate', description: 'Full automation. Proposals auto-approved, PRs auto-merged if Reviewer approves.' },
 ]
 
 export function SettingsPageClient({
@@ -59,6 +60,7 @@ export function SettingsPageClient({
   initialAutonomyMode,
   initialMaxBranches,
   initialPaused,
+  initialWildCardFrequency,
   initialIdeas,
 }: Props) {
   // Tab state
@@ -86,6 +88,7 @@ export function SettingsPageClient({
   const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>(initialAutonomyMode)
   const [maxBranches, setMaxBranches] = useState(initialMaxBranches)
   const [paused, setPaused] = useState(initialPaused)
+  const [wildCardFreq, setWildCardFreq] = useState(initialWildCardFrequency)
   const [savingConfig, setSavingConfig] = useState(false)
   const [scoutQueued, setScoutQueued] = useState(false)
   const [scoutLoading, setScoutLoading] = useState(false)
@@ -190,6 +193,11 @@ export function SettingsPageClient({
   const handleMaxBranchesChange = useCallback((value: number) => {
     setMaxBranches(value)
     saveField('max_concurrent_branches', value)
+  }, [saveField])
+
+  const handleWildCardFreqChange = useCallback((value: number) => {
+    setWildCardFreq(value)
+    saveField('wild_card_frequency', value)
   }, [saveField])
 
   const handleTogglePause = useCallback(() => {
@@ -394,6 +402,41 @@ export function SettingsPageClient({
                 {opt.label}
               </span>
               <p className="mt-0.5 text-xs text-muted">{opt.description}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Section 4b: Wild Card Frequency */}
+      <div className="glass-card p-5">
+        <div className="mb-4 flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-purple-400" />
+          <h2 className="text-sm font-semibold text-fg">Wild Card Frequency</h2>
+        </div>
+
+        <p className="mb-3 text-xs text-muted">
+          How often the strategist introduces unexpected, creative proposals outside your normal priorities. Wild cards can surface novel improvements you might not think to ask for.
+        </p>
+
+        <div className="flex flex-wrap gap-2">
+          {([
+            { value: 0, label: '0%' },
+            { value: 0.1, label: '10%' },
+            { value: 0.2, label: '20%' },
+            { value: 0.33, label: '33%' },
+            { value: 0.5, label: '50%' },
+          ] as const).map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => handleWildCardFreqChange(opt.value)}
+              disabled={savingConfig}
+              className={`rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+                wildCardFreq === opt.value
+                  ? 'bg-purple-400/20 text-purple-400'
+                  : 'bg-surface text-muted hover:text-fg'
+              } disabled:opacity-50`}
+            >
+              {opt.label}
             </button>
           ))}
         </div>

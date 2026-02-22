@@ -64,6 +64,8 @@ export type Proposal = {
   created_at: string
   reviewed_at: string | null
   completed_at: string | null
+  cycle_id: string | null
+  is_wild_card: boolean
 }
 
 export type StrategyMemoryEvent = {
@@ -138,6 +140,13 @@ export type BranchEventType =
   | 'deploy_preview'
   | 'deploy_production'
   | 'branch_deleted'
+  | 'auto_approved'
+  | 'auto_merged'
+  | 'merge_failed'
+  | 'cycle_started'
+  | 'cycle_completed'
+  | 'checkpoint_created'
+  | 'checkpoint_reverted'
 
 export type BranchEvent = {
   id: string
@@ -160,6 +169,20 @@ export type Branch = {
 }
 
 export type AutonomyMode = 'audit' | 'assist' | 'automate'
+
+export type Checkpoint = {
+  id: string
+  project_id: string
+  cycle_id: string | null
+  proposal_id: string | null
+  checkpoint_type: 'merge' | 'cycle_complete'
+  commit_sha: string
+  pr_number: number | null
+  branch_name: string | null
+  revert_pr_number: number | null
+  metadata: Record<string, unknown>
+  created_at: string
+}
 
 export type RiskPaths = {
   high: string[]

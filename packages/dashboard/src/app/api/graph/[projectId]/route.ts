@@ -40,9 +40,9 @@ export async function GET(
     let state: BranchState
 
     // Terminal states
-    if (lastEvent.event_type === 'pr_merged' || lastEvent.event_type === 'branch_deleted') state = 'merged'
+    if (lastEvent.event_type === 'pr_merged' || lastEvent.event_type === 'branch_deleted' || lastEvent.event_type === 'auto_merged') state = 'merged'
     else if (lastEvent.event_type === 'proposal_rejected' || lastEvent.event_type === 'review_rejected') state = 'rejected'
-    else if (lastEvent.event_type === 'build_failed') state = 'failed'
+    else if (lastEvent.event_type === 'build_failed' || lastEvent.event_type === 'merge_failed') state = 'failed'
     else if (lastEvent.event_type === 'deploy_production' || lastEvent.event_type === 'deploy_preview') state = 'deployed'
     // Needs human action
     else if (lastEvent.event_type === 'pr_created') state = 'needs_action'
@@ -51,7 +51,28 @@ export async function GET(
     // Actively working
     else if (lastEvent.event_type === 'build_started' || lastEvent.event_type === 'build_remediation') state = 'active'
     else if (lastEvent.event_type === 'review_started') state = 'active'
-    else if (lastEvent.event_type === 'proposal_approved') state = 'active'
+    else if (lastEvent.event_type === 'proposal_approved' || lastEvent.event_type === 'auto_approved') state = 'active'
+    // Cycle events
+    else if (lastEvent.event_type === 'cycle_started' || lastEvent.event_type === 'cycle_completed') state = 'pending'
+    // Checkpoint events — keep current state by falling through to default
+    else if (lastEvent.event_type === 'checkpoint_created' || lastEvent.event_type === 'checkpoint_reverted') {
+      // Checkpoints are informational — derive state from the previous non-checkpoint event
+      const prevEvent = branchEvents.slice(0, -1).reverse().find(
+        e => e.event_type !== 'checkpoint_created' && e.event_type !== 'checkpoint_reverted'
+      )
+      if (prevEvent) {
+        // Re-derive from prevEvent (simplified: default to pending)
+        if (prevEvent.event_type === 'pr_merged' || prevEvent.event_type === 'branch_deleted' || prevEvent.event_type === 'auto_merged') state = 'merged'
+        else if (prevEvent.event_type === 'build_failed' || prevEvent.event_type === 'merge_failed') state = 'failed'
+        else if (prevEvent.event_type === 'proposal_rejected' || prevEvent.event_type === 'review_rejected') state = 'rejected'
+        else if (prevEvent.event_type === 'deploy_production' || prevEvent.event_type === 'deploy_preview') state = 'deployed'
+        else if (prevEvent.event_type === 'build_started' || prevEvent.event_type === 'build_remediation' || prevEvent.event_type === 'review_started' || prevEvent.event_type === 'proposal_approved' || prevEvent.event_type === 'auto_approved') state = 'active'
+        else if (prevEvent.event_type === 'pr_created' || prevEvent.event_type === 'proposal_created' || prevEvent.event_type === 'review_approved' || prevEvent.event_type === 'build_completed') state = 'needs_action'
+        else state = 'pending'
+      } else {
+        state = 'pending'
+      }
+    }
     // Informational
     else if (lastEvent.event_type === 'scout_finding') state = 'pending'
     else state = 'pending'

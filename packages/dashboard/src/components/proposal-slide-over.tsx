@@ -116,6 +116,11 @@ export function ProposalSlideOver({ proposal, projectId, githubRepo, onClose, on
             <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${priority.color}`}>
               {priority.label}
             </span>
+            {proposal.is_wild_card && (
+              <span className="rounded-full bg-purple-400/10 px-2 py-0.5 text-[11px] font-medium text-purple-400">
+                Wild Card
+              </span>
+            )}
             <span className="text-xs text-muted">{proposal.status}</span>
           </div>
           <button

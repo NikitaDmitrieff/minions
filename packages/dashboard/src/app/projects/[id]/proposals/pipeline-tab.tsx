@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
   Lightbulb,
@@ -10,10 +10,14 @@ import {
   Clock,
   GitBranch,
   ExternalLink,
+  Shield,
+  RotateCcw,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
 import { ProposalSlideOver } from '@/components/proposal-slide-over'
 import { LiveLogTail } from '@/components/live-log-tail'
-import type { Proposal } from '@/lib/types'
+import type { Proposal, Checkpoint } from '@/lib/types'
 
 type Run = {
   id: string
@@ -91,6 +95,37 @@ export function PipelineTab({ projectId, githubRepo, proposals: initialProposals
   const [proposals, setProposals] = useState(initialProposals)
   const [selected, setSelected] = useState<Proposal | null>(null)
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
+
+  // Checkpoints
+  const [checkpoints, setCheckpoints] = useState<(Checkpoint & { proposals?: { title: string } | null })[]>([])
+  const [expandedCycle, setExpandedCycle] = useState<string | null>(null)
+  const [revertingId, setRevertingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch(`/api/checkpoints/${projectId}`)
+      .then(res => res.json())
+      .then(data => setCheckpoints(data.checkpoints ?? []))
+      .catch(() => {})
+  }, [projectId])
+
+  const handleRevert = useCallback(async (checkpointId: string) => {
+    setRevertingId(checkpointId)
+    try {
+      const res = await fetch(`/api/checkpoints/${projectId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checkpoint_id: checkpointId }),
+      })
+      if (res.ok) {
+        const json = await res.json()
+        setCheckpoints(prev =>
+          prev.map(cp => cp.id === checkpointId ? { ...cp, revert_pr_number: json.pr_number } : cp)
+        )
+      }
+    } finally {
+      setRevertingId(null)
+    }
+  }, [projectId])
 
   // Build a map: issue_number → run (for linking proposals to runs)
   const runByIssue = new Map<number, Run>()
@@ -346,6 +381,101 @@ export function PipelineTab({ projectId, githubRepo, proposals: initialProposals
           </div>
         </div>
       </div>
+
+      {/* Checkpoints */}
+      {checkpoints.length > 0 && (
+        <div className="mt-8">
+          <div className="mb-4 flex items-center gap-2">
+            <Shield className="h-4 w-4 text-accent" />
+            <h2 className="text-sm font-medium text-fg">Checkpoints</h2>
+            <span className="rounded-full bg-surface px-2 py-0.5 text-[11px] tabular-nums text-muted">
+              {checkpoints.length}
+            </span>
+          </div>
+
+          {(() => {
+            // Group by cycle
+            const byCycle = new Map<string, typeof checkpoints>()
+            const noCycle: typeof checkpoints = []
+            for (const cp of checkpoints) {
+              if (cp.cycle_id) {
+                const arr = byCycle.get(cp.cycle_id) || []
+                arr.push(cp)
+                byCycle.set(cp.cycle_id, arr)
+              } else {
+                noCycle.push(cp)
+              }
+            }
+
+            const allGroups = [
+              ...Array.from(byCycle.entries()).map(([cycleId, cps]) => ({ cycleId, cps })),
+              ...(noCycle.length > 0 ? [{ cycleId: null as string | null, cps: noCycle }] : []),
+            ]
+
+            return (
+              <div className="space-y-2">
+                {allGroups.map(({ cycleId, cps }) => (
+                  <div key={cycleId ?? 'ungrouped'} className="glass-card overflow-hidden">
+                    <button
+                      onClick={() => setExpandedCycle(expandedCycle === cycleId ? null : cycleId)}
+                      className="flex w-full items-center gap-2 p-3 text-left text-sm font-medium text-fg hover:bg-white/[0.04]"
+                    >
+                      {expandedCycle === cycleId ? (
+                        <ChevronDown className="h-3.5 w-3.5 text-muted" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5 text-muted" />
+                      )}
+                      {cycleId ? `Cycle ${cycleId.slice(0, 8)}` : 'Ungrouped'}
+                      <span className="ml-auto text-[11px] text-muted">{cps.length} checkpoint{cps.length !== 1 ? 's' : ''}</span>
+                    </button>
+                    {expandedCycle === cycleId && (
+                      <div className="border-t border-edge">
+                        {cps.map(cp => (
+                          <div key={cp.id} className="flex items-center gap-3 border-b border-edge/50 px-4 py-3 last:border-b-0">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <code className="text-[11px] font-medium text-accent">{cp.commit_sha.slice(0, 7)}</code>
+                                {cp.pr_number && (
+                                  <span className="text-[11px] text-muted">PR #{cp.pr_number}</span>
+                                )}
+                                <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-muted">
+                                  {cp.checkpoint_type === 'merge' ? 'merge' : 'cycle'}
+                                </span>
+                              </div>
+                              {cp.proposals?.title && (
+                                <p className="mt-0.5 truncate text-xs text-dim">{cp.proposals.title}</p>
+                              )}
+                              <p className="mt-0.5 text-[10px] text-dim">
+                                {new Date(cp.created_at).toLocaleString()}
+                              </p>
+                            </div>
+                            {cp.revert_pr_number ? (
+                              <span className="text-[11px] text-muted">Revert PR #{cp.revert_pr_number}</span>
+                            ) : (
+                              <button
+                                onClick={() => handleRevert(cp.id)}
+                                disabled={revertingId === cp.id}
+                                className="flex items-center gap-1 rounded-lg bg-red-400/10 px-2.5 py-1.5 text-[11px] font-medium text-red-400 transition-colors hover:bg-red-400/20 disabled:opacity-50"
+                              >
+                                {revertingId === cp.id ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <RotateCcw className="h-3 w-3" />
+                                )}
+                                Revert
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
+        </div>
+      )}
 
       {/* Proposal slide-over */}
       {selected && (

@@ -9,6 +9,7 @@ import { runBuilderJob } from './builder-worker.js'
 import { runReviewerJob } from './reviewer-worker.js'
 import { getInstallationToken, getInstallationFirstRepo, isGitHubAppConfigured } from './github-app.js'
 import { initCredentials, ensureValidToken } from './oauth.js'
+import { autoApproveAndTriggerBuilds, shouldAutoMerge, autoMergePR } from './autonomy.js'
 type Supabase = ReturnType<typeof createSupabaseClient>
 
 const POLL_INTERVAL_MS = 5_000
@@ -123,7 +124,25 @@ async function fetchProject(supabase: Supabase, projectId: string) {
   return data
 }
 
-async function findRunId(supabase: Supabase, projectId: string, issueNumber: number): Promise<string> {
+async function findRunId(supabase: Supabase, projectId: string, issueNumber: number, jobId?: string): Promise<string> {
+  // For autonomous builds (issue_number=0), try to find by pipeline_run_id from job payload
+  if (jobId && issueNumber === 0) {
+    const { data: job } = await supabase
+      .from('job_queue')
+      .select('issue_body')
+      .eq('id', jobId)
+      .single()
+
+    if (job?.issue_body) {
+      try {
+        const payload = JSON.parse(job.issue_body)
+        if (payload.pipeline_run_id) {
+          return payload.pipeline_run_id
+        }
+      } catch { /* fall through */ }
+    }
+  }
+
   const { data } = await supabase
     .from('pipeline_runs')
     .select('id')
@@ -250,6 +269,20 @@ async function processJob(supabase: Supabase, job: {
 }) {
   console.log(`[${WORKER_ID}] Processing job ${job.id} (type=${job.job_type ?? 'implement'}, ${job.job_type === 'self_improve' ? `source_run=${job.source_run_id}` : `issue #${job.github_issue_number}`})`)
 
+  // Per-project pause check
+  try {
+    const project = await fetchProject(supabase, job.project_id)
+    if (project.paused) {
+      console.log(`[${WORKER_ID}] Project ${job.project_id} is paused — releasing job back to pending`)
+      await supabase.from('job_queue').update({
+        status: 'pending',
+        worker_id: null,
+        locked_at: null,
+      }).eq('id', job.id)
+      return
+    }
+  } catch { /* project fetch failed — proceed anyway */ }
+
   try {
     // Dispatch based on job type
     if (job.job_type === 'self_improve') {
@@ -290,8 +323,11 @@ async function processJob(supabase: Supabase, job: {
       await runStrategizeJob({
         jobId: job.id,
         projectId: job.project_id,
+        cycleId: job.source_run_id || null,
         supabase,
       })
+      // Auto-approve proposals after strategize completes
+      await autoApproveAndTriggerBuilds(supabase, job.project_id, job.source_run_id || null)
     } else if (job.job_type === 'scout') {
       await runScoutJob({
         jobId: job.id,
@@ -299,7 +335,7 @@ async function processJob(supabase: Supabase, job: {
         supabase,
       })
 
-      // Auto-trigger strategist after scout completes
+      // Auto-trigger strategist after scout completes (thread scout job ID as cycle reference)
       console.log(`[${WORKER_ID}] Scout complete, auto-triggering strategize for project ${job.project_id}`)
       await supabase.from('job_queue').insert({
         project_id: job.project_id,
@@ -307,6 +343,7 @@ async function processJob(supabase: Supabase, job: {
         issue_title: 'Auto-strategize after scout',
         issue_body: '{}',
         job_type: 'strategize',
+        source_run_id: job.id,
         status: 'pending',
       })
     } else if (job.job_type === 'build') {
@@ -319,7 +356,7 @@ async function processJob(supabase: Supabase, job: {
       }
 
       // Update pipeline_run stage to running
-      const buildRunId = await findRunId(supabase, job.project_id, job.github_issue_number)
+      const buildRunId = await findRunId(supabase, job.project_id, job.github_issue_number, job.id)
       await supabase.from('pipeline_runs').update({ stage: 'running' }).eq('id', buildRunId)
 
       await supabase.from('branch_events').insert({
@@ -400,26 +437,51 @@ async function processJob(supabase: Supabase, job: {
 
       // Complete proposal lifecycle based on review outcome
       if (reviewResult.approved) {
-        await supabase.from('proposals')
-          .update({ status: 'done', completed_at: new Date().toISOString() })
-          .eq('id', payload.proposal_id)
-        console.log(`[${WORKER_ID}] Review approved — proposal ${payload.proposal_id} marked as done`)
+        // Try auto-merge if in automate mode
+        if (await shouldAutoMerge(supabase, job.project_id)) {
+          console.log(`[${WORKER_ID}] Review approved — attempting auto-merge for PR #${payload.pr_number}`)
+          await autoMergePR(supabase, job.project_id, {
+            proposal_id: payload.proposal_id!,
+            pr_number: payload.pr_number!,
+            head_sha: payload.head_sha!,
+            branch_name: payload.branch_name!,
+          })
+        } else {
+          // Manual mode: mark proposal done and pipeline deployed
+          await supabase.from('proposals')
+            .update({ status: 'done', completed_at: new Date().toISOString() })
+            .eq('id', payload.proposal_id)
+          console.log(`[${WORKER_ID}] Review approved — proposal ${payload.proposal_id} marked as done`)
 
-        // Update pipeline_run to deployed
-        const { data: reviewRun } = await supabase
-          .from('pipeline_runs')
-          .select('id')
-          .eq('project_id', job.project_id)
-          .eq('github_issue_number', job.github_issue_number)
-          .order('started_at', { ascending: false })
-          .limit(1)
-          .single()
+          const { data: reviewRun } = await supabase
+            .from('pipeline_runs')
+            .select('id')
+            .eq('project_id', job.project_id)
+            .eq('github_issue_number', job.github_issue_number)
+            .order('started_at', { ascending: false })
+            .limit(1)
+            .single()
 
-        if (reviewRun) {
-          await supabase.from('pipeline_runs')
-            .update({ stage: 'deployed', completed_at: new Date().toISOString(), result: 'success' })
-            .eq('id', reviewRun.id)
+          if (reviewRun) {
+            await supabase.from('pipeline_runs')
+              .update({ stage: 'deployed', completed_at: new Date().toISOString(), result: 'success' })
+              .eq('id', reviewRun.id)
+          }
         }
+      } else {
+        // Reviewer requested changes or rejected
+        console.log(`[${WORKER_ID}] Review rejected — proposal ${payload.proposal_id}`)
+        await supabase.from('proposals')
+          .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Reviewer requested changes' })
+          .eq('id', payload.proposal_id)
+
+        await supabase.from('branch_events').insert({
+          project_id: job.project_id,
+          branch_name: payload.branch_name,
+          event_type: 'review_rejected',
+          event_data: { proposal_id: payload.proposal_id, pr_number: payload.pr_number },
+          actor: 'reviewer',
+        })
       }
     } else {
       // Default: implement job (existing flow)

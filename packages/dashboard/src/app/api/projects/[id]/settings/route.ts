@@ -52,6 +52,9 @@ export async function PATCH(
   if ('risk_paths' in body) {
     updates.risk_paths = body.risk_paths
   }
+  if ('wild_card_frequency' in body) {
+    updates.wild_card_frequency = body.wild_card_frequency
+  }
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: 'No fields to update' }, { status: 400 })
