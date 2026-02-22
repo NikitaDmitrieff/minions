@@ -37,7 +37,7 @@ packages/
 - OAuth tokens do NOT work for direct Anthropic API calls (only for Claude Code CLI)
 - Dashboard async params: Next.js 15+ route handlers use `const { projectId } = await params` pattern
 - Glass-card styling: components use `glass-card`, `stat-card` CSS classes with Tailwind theme colors
-- Supabase schema: `feedback_chat` (agent queries with `{ db: { schema: 'feedback_chat' } }`)
+- Supabase schema: `minions` (agent queries with `{ db: { schema: 'minions' } }`)
 
 ## Worker Types
 

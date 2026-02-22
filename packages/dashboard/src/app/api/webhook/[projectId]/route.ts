@@ -84,13 +84,43 @@ export async function POST(
   const issue = payload.issue
   const triggeredBy = payload.issue?.user?.login ?? null
 
-  // Enqueue job
-  const { data: job, error: jobError } = await supabase.from('job_queue').insert({
-    project_id: project.id,
-    github_issue_number: issue.number,
-    issue_title: issue.title ?? '',
-    issue_body: issue.body ?? '',
-  }).select('id').single()
+  // Check if this issue is linked to a proposal (proposal-driven build)
+  const { data: proposal } = await supabase
+    .from('proposals')
+    .select('id, spec, branch_name, title')
+    .eq('project_id', project.id)
+    .eq('github_issue_number', issue.number)
+    .single()
+
+  let job: { id: string } | null = null
+  let jobError: unknown = null
+
+  if (proposal) {
+    // Proposal-driven: create a build job with structured payload
+    const branchName = proposal.branch_name
+      || `proposals/${(proposal.title || issue.title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '').slice(0, 50)}`;
+
+    ({ data: job, error: jobError } = await supabase.from('job_queue').insert({
+      project_id: project.id,
+      github_issue_number: issue.number,
+      issue_title: issue.title ?? '',
+      issue_body: JSON.stringify({
+        proposal_id: proposal.id,
+        branch_name: branchName,
+        spec: proposal.spec,
+        title: proposal.title || issue.title,
+      }),
+      job_type: 'build',
+    }).select('id').single())
+  } else {
+    // Default agent job
+    ({ data: job, error: jobError } = await supabase.from('job_queue').insert({
+      project_id: project.id,
+      github_issue_number: issue.number,
+      issue_title: issue.title ?? '',
+      issue_body: issue.body ?? '',
+    }).select('id').single())
+  }
 
   if (jobError || !job) {
     return NextResponse.json({ error: 'Failed to enqueue' }, { status: 500 })

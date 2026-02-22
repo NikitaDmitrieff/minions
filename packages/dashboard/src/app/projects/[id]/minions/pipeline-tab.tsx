@@ -116,7 +116,7 @@ export function PipelineTab({ projectId, githubRepo, proposals: initialProposals
   // Stats — unified lifecycle counts
   const rejectedCount = proposals.filter(p => p.status === 'rejected').length
   const shippedCount = proposals.filter(p => p.status === 'done').length
-  const activeCount = activeProposals.length + activeRuns.length + activeJobs.filter(j => j.status === 'processing').length
+  const activeCount = activeProposals.length + activeRuns.length
 
   function handleUpdate(updated: Proposal) {
     setProposals(prev => prev.map(p => p.id === updated.id ? updated : p))

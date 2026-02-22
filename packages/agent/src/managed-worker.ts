@@ -318,6 +318,10 @@ async function processJob(supabase: Supabase, job: {
         throw new Error('Build job missing required payload fields: proposal_id, branch_name, spec')
       }
 
+      // Update pipeline_run stage to running
+      const buildRunId = await findRunId(supabase, job.project_id, job.github_issue_number)
+      await supabase.from('pipeline_runs').update({ stage: 'running' }).eq('id', buildRunId)
+
       await supabase.from('branch_events').insert({
         project_id: job.project_id,
         branch_name: payload.branch_name,
@@ -339,12 +343,19 @@ async function processJob(supabase: Supabase, job: {
         supabase,
       })
 
+      // Update pipeline_run with PR number and stage
+      if (result.prNumber) {
+        await supabase.from('pipeline_runs')
+          .update({ stage: 'validating', github_pr_number: result.prNumber })
+          .eq('id', buildRunId)
+      }
+
       // Auto-trigger reviewer after builder completes with a PR
       if (result.prNumber && result.headSha) {
         console.log(`[${WORKER_ID}] Build complete, auto-triggering review for PR #${result.prNumber}`)
         await supabase.from('job_queue').insert({
           project_id: job.project_id,
-          github_issue_number: result.prNumber,
+          github_issue_number: job.github_issue_number,
           issue_title: `Review PR #${result.prNumber}`,
           issue_body: JSON.stringify({
             proposal_id: payload.proposal_id,
@@ -377,7 +388,7 @@ async function processJob(supabase: Supabase, job: {
         actor: 'reviewer',
       })
 
-      await runReviewerJob({
+      const reviewResult = await runReviewerJob({
         jobId: job.id,
         projectId: job.project_id,
         proposalId: payload.proposal_id,
@@ -386,6 +397,30 @@ async function processJob(supabase: Supabase, job: {
         branchName: payload.branch_name,
         supabase,
       })
+
+      // Complete proposal lifecycle based on review outcome
+      if (reviewResult.approved) {
+        await supabase.from('proposals')
+          .update({ status: 'done' })
+          .eq('id', payload.proposal_id)
+        console.log(`[${WORKER_ID}] Review approved — proposal ${payload.proposal_id} marked as done`)
+
+        // Update pipeline_run to deployed
+        const { data: reviewRun } = await supabase
+          .from('pipeline_runs')
+          .select('id')
+          .eq('project_id', job.project_id)
+          .eq('github_issue_number', job.github_issue_number)
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .single()
+
+        if (reviewRun) {
+          await supabase.from('pipeline_runs')
+            .update({ stage: 'deployed', completed_at: new Date().toISOString(), result: 'success' })
+            .eq('id', reviewRun.id)
+        }
+      }
     } else {
       // Default: implement job (existing flow)
       const creds = await fetchCredentials(supabase, job.project_id)
