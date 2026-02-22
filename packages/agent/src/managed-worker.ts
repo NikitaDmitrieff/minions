@@ -320,14 +320,19 @@ async function processJob(supabase: Supabase, job: {
           .eq('id', job.source_run_id)
       }
     } else if (job.job_type === 'strategize') {
+      // Extract cycle_id from issue_body (passed from scout auto-trigger)
+      let strategizePayload: { cycle_id?: string } = {}
+      try { strategizePayload = JSON.parse(job.issue_body) } catch {}
+      const strategizeCycleId = strategizePayload.cycle_id || null
+
       await runStrategizeJob({
         jobId: job.id,
         projectId: job.project_id,
-        cycleId: job.source_run_id || null,
+        cycleId: strategizeCycleId,
         supabase,
       })
       // Auto-approve proposals after strategize completes
-      await autoApproveAndTriggerBuilds(supabase, job.project_id, job.source_run_id || null)
+      await autoApproveAndTriggerBuilds(supabase, job.project_id, strategizeCycleId)
     } else if (job.job_type === 'scout') {
       await runScoutJob({
         jobId: job.id,
@@ -336,14 +341,15 @@ async function processJob(supabase: Supabase, job: {
       })
 
       // Auto-trigger strategist after scout completes (thread scout job ID as cycle reference)
-      console.log(`[${WORKER_ID}] Scout complete, auto-triggering strategize for project ${job.project_id}`)
+      // Note: source_run_id has FK to pipeline_runs, so we pass cycle_id through issue_body instead
+      const cycleId = job.id
+      console.log(`[${WORKER_ID}] Scout complete, auto-triggering strategize for project ${job.project_id} (cycle ${cycleId.slice(0, 8)})`)
       await supabase.from('job_queue').insert({
         project_id: job.project_id,
         github_issue_number: 0,
         issue_title: 'Auto-strategize after scout',
-        issue_body: '{}',
+        issue_body: JSON.stringify({ cycle_id: cycleId }),
         job_type: 'strategize',
-        source_run_id: job.id,
         status: 'pending',
       })
     } else if (job.job_type === 'build') {
