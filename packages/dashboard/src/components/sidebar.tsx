@@ -3,7 +3,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { FolderKanban, GitBranch, Search, BarChart3, Kanban, Settings, Lightbulb, LogOut } from 'lucide-react'
+import { FolderKanban, GitBranch, Search, Lightbulb, Settings, Eye, Zap, LogOut } from 'lucide-react'
+
+type Mode = 'observe' | 'act'
+
+function getMode(pathname: string, projectId: string | null): Mode {
+  if (!projectId) return 'observe'
+  if (pathname.includes('/proposals') || pathname.includes('/settings')) return 'act'
+  return 'observe'
+}
 
 export function Sidebar() {
   const pathname = usePathname()
@@ -12,6 +20,8 @@ export function Sidebar() {
 
   const projectMatch = pathname.match(/\/projects\/([^/]+)/)
   const projectId = projectMatch && projectMatch[1] !== 'new' ? projectMatch[1] : null
+
+  const mode = getMode(pathname, projectId)
 
   const expand = useCallback(() => {
     if (collapseTimer.current) clearTimeout(collapseTimer.current)
@@ -27,6 +37,18 @@ export function Sidebar() {
       if (collapseTimer.current) clearTimeout(collapseTimer.current)
     }
   }, [])
+
+  const observeItems = projectId ? [
+    { href: `/projects/${projectId}`, label: 'Activity', icon: GitBranch, active: pathname === `/projects/${projectId}` },
+    { href: `/projects/${projectId}/findings`, label: 'Findings', icon: Search, active: pathname.includes('/findings') },
+  ] : []
+
+  const actItems = projectId ? [
+    { href: `/projects/${projectId}/proposals`, label: 'Proposals', icon: Lightbulb, active: pathname.includes('/proposals') },
+    { href: `/projects/${projectId}/settings`, label: 'Settings', icon: Settings, active: pathname.includes('/settings') },
+  ] : []
+
+  const items = mode === 'observe' ? observeItems : actItems
 
   return (
     <aside
@@ -51,107 +73,47 @@ export function Sidebar() {
         {expanded && <span className="truncate text-xs">Projects</span>}
       </Link>
 
-      {/* Graph (default project view) */}
+      {/* Mode toggle */}
       {projectId && (
-        <Link
-          href={`/projects/${projectId}`}
-          className={`flex items-center rounded-[16px] transition-colors ${
-            pathname === `/projects/${projectId}`
-              ? 'bg-white/[0.08] text-fg'
-              : 'text-muted hover:bg-white/[0.06] hover:text-fg'
-          } ${expanded ? 'gap-2.5 px-2 py-2' : 'justify-center p-1.5'}`}
-        >
-          <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center">
-            <GitBranch className="h-[15px] w-[15px]" />
-          </div>
-          {expanded && <span className="truncate text-xs">Graph</span>}
-        </Link>
+        <div className={`my-1.5 flex items-center gap-0.5 rounded-[14px] bg-white/[0.04] p-0.5 ${expanded ? '' : 'flex-col'}`}>
+          <Link
+            href={`/projects/${projectId}`}
+            className={`flex items-center justify-center rounded-[12px] transition-colors ${
+              mode === 'observe' ? 'bg-white/[0.08] text-fg' : 'text-muted hover:text-fg'
+            } ${expanded ? 'flex-1 gap-1.5 px-2 py-1.5' : 'p-1.5'}`}
+          >
+            <Eye className="h-3 w-3 shrink-0" />
+            {expanded && <span className="text-[10px] font-medium">Observe</span>}
+          </Link>
+          <Link
+            href={`/projects/${projectId}/proposals`}
+            className={`flex items-center justify-center rounded-[12px] transition-colors ${
+              mode === 'act' ? 'bg-white/[0.08] text-fg' : 'text-muted hover:text-fg'
+            } ${expanded ? 'flex-1 gap-1.5 px-2 py-1.5' : 'p-1.5'}`}
+          >
+            <Zap className="h-3 w-3 shrink-0" />
+            {expanded && <span className="text-[10px] font-medium">Act</span>}
+          </Link>
+        </div>
       )}
 
-      {/* Kanban */}
-      {projectId && (
+      {/* Nav items for current mode */}
+      {items.map(item => (
         <Link
-          href={`/projects/${projectId}/kanban`}
+          key={item.href}
+          href={item.href}
           className={`flex items-center rounded-[16px] transition-colors ${
-            pathname.includes('/kanban') || pathname.includes('/minions')
+            item.active
               ? 'bg-white/[0.08] text-fg'
               : 'text-muted hover:bg-white/[0.06] hover:text-fg'
           } ${expanded ? 'gap-2.5 px-2 py-2' : 'justify-center p-1.5'}`}
         >
           <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center">
-            <Kanban className="h-[15px] w-[15px]" />
+            <item.icon className="h-[15px] w-[15px]" />
           </div>
-          {expanded && <span className="truncate text-xs">Kanban</span>}
+          {expanded && <span className="truncate text-xs">{item.label}</span>}
         </Link>
-      )}
-
-      {/* Findings */}
-      {projectId && (
-        <Link
-          href={`/projects/${projectId}/findings`}
-          className={`flex items-center rounded-[16px] transition-colors ${
-            pathname.includes('/findings')
-              ? 'bg-white/[0.08] text-fg'
-              : 'text-muted hover:bg-white/[0.06] hover:text-fg'
-          } ${expanded ? 'gap-2.5 px-2 py-2' : 'justify-center p-1.5'}`}
-        >
-          <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center">
-            <Search className="h-[15px] w-[15px]" />
-          </div>
-          {expanded && <span className="truncate text-xs">Findings</span>}
-        </Link>
-      )}
-
-      {/* Health */}
-      {projectId && (
-        <Link
-          href={`/projects/${projectId}/health`}
-          className={`flex items-center rounded-[16px] transition-colors ${
-            pathname.includes('/health')
-              ? 'bg-white/[0.08] text-fg'
-              : 'text-muted hover:bg-white/[0.06] hover:text-fg'
-          } ${expanded ? 'gap-2.5 px-2 py-2' : 'justify-center p-1.5'}`}
-        >
-          <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center">
-            <BarChart3 className="h-[15px] w-[15px]" />
-          </div>
-          {expanded && <span className="truncate text-xs">Health</span>}
-        </Link>
-      )}
-
-      {/* Settings */}
-      {projectId && (
-        <Link
-          href={`/projects/${projectId}/settings`}
-          className={`flex items-center rounded-[16px] transition-colors ${
-            pathname.includes('/settings')
-              ? 'bg-white/[0.08] text-fg'
-              : 'text-muted hover:bg-white/[0.06] hover:text-fg'
-          } ${expanded ? 'gap-2.5 px-2 py-2' : 'justify-center p-1.5'}`}
-        >
-          <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center">
-            <Settings className="h-[15px] w-[15px]" />
-          </div>
-          {expanded && <span className="truncate text-xs">Settings</span>}
-        </Link>
-      )}
-
-      {/* Your Input */}
-      {projectId && (
-        <Link
-          href={`/projects/${projectId}/input`}
-          className={`flex items-center rounded-[16px] transition-colors ${
-            pathname.includes('/input')
-              ? 'bg-white/[0.08] text-fg'
-              : 'text-muted hover:bg-white/[0.06] hover:text-fg'
-          } ${expanded ? 'gap-2.5 px-2 py-2' : 'justify-center p-1.5'}`}
-        >
-          <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center">
-            <Lightbulb className="h-[15px] w-[15px]" />
-          </div>
-          {expanded && <span className="truncate text-xs">Your Input</span>}
-        </Link>
-      )}
+      ))}
 
       {/* Divider */}
       <div className={`my-1 h-px bg-white/[0.06] ${expanded ? 'mx-2' : 'mx-auto w-5'}`} />
