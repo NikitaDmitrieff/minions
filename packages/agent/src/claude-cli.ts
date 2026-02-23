@@ -178,7 +178,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<void> {
               logger?.event('text', `[claude] ${preview}`)
             }
           }
-        } else if (evt.type) {
+        } else if (evt.type && evt.type !== 'stream_event') {
           console.log(`[${logPrefix}] [event] ${evt.type}`)
         }
       } catch {

@@ -257,16 +257,32 @@ ${review.security_issues ? '\n**Security issues detected** — review flagged po
 ---
 *SHA: ${headSha} | Auto-reviewed by the reviewer agent.*`
 
-  const ghEvent = review.verdict === 'approve' ? 'APPROVE' as const : 'REQUEST_CHANGES' as const
+  // GitHub doesn't allow REQUEST_CHANGES on your own PR. Since builder and reviewer
+  // use the same GitHub App token, use COMMENT for rejections and APPROVE for approvals.
+  const ghEvent = review.verdict === 'approve' ? 'APPROVE' as const : 'COMMENT' as const
 
-  const { data: ghReview } = await octokit.pulls.createReview({
-    owner,
-    repo,
-    pull_number: prNumber,
-    commit_id: headSha,
-    body: reviewBody,
-    event: ghEvent,
-  })
+  let ghReview: { id: number }
+  try {
+    const { data } = await octokit.pulls.createReview({
+      owner,
+      repo,
+      pull_number: prNumber,
+      commit_id: headSha,
+      body: reviewBody,
+      event: ghEvent,
+    })
+    ghReview = data
+  } catch (err: unknown) {
+    // Fallback: if APPROVE also fails (same author edge case), use COMMENT
+    if (ghEvent === 'APPROVE' && err instanceof Error && err.message.includes('own pull request')) {
+      const { data } = await octokit.pulls.createReview({
+        owner, repo, pull_number: prNumber, commit_id: headSha, body: reviewBody, event: 'COMMENT',
+      })
+      ghReview = data
+    } else {
+      throw err
+    }
+  }
 
   await logger.event('text', `GitHub review posted (ID: ${ghReview.id})`)
 
