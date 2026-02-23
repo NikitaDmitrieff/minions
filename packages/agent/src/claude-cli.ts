@@ -106,11 +106,13 @@ export interface RunClaudeOptions {
   logPrefix?: string
   /** If true, use restricted env (HOME/PATH only). Default: false. */
   restrictedEnv?: boolean
+  /** Extra env vars to pass to the CLI (e.g. database credentials). */
+  extraEnv?: Record<string, string>
 }
 
 export async function runClaude(opts: RunClaudeOptions): Promise<void> {
-  const { prompt, workDir, timeoutMs, logger, logPrefix = 'claude', restrictedEnv = false } = opts
-  const env = await claudeEnv(restrictedEnv)
+  const { prompt, workDir, timeoutMs, logger, logPrefix = 'claude', restrictedEnv = false, extraEnv } = opts
+  const env = { ...await claudeEnv(restrictedEnv), ...extraEnv }
   const args = ['--dangerously-skip-permissions', '--permission-mode', 'dontAsk', '--verbose', '--model', 'claude-sonnet-4-6', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
 
   console.log(`[${logPrefix}] Running Claude Code CLI (stream-json, auth=oauth)...`)

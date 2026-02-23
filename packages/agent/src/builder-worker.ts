@@ -129,6 +129,7 @@ export async function runBuilderJob(input: BuilderInput): Promise<{
 
     // Replace CLAUDE.md with builder instructions (prevents prompt injection + guides skills)
     const claudeMdPath = join(workDir, 'CLAUDE.md')
+    const hasSandboxDb = !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
     writeFileSync(claudeMdPath, `# Builder Agent Instructions
 
 ## CRITICAL: You are running in HEADLESS mode. There is NO human to interact with.
@@ -141,6 +142,26 @@ export async function runBuilderJob(input: BuilderInput): Promise<{
 - DO be creative and bold with the implementation — the spec is your guide
 - Start writing code IMMEDIATELY after reading the codebase
 - Your output is judged by what you SHIP, not what you plan
+${hasSandboxDb ? `
+## Database Access
+
+You have access to a Supabase Postgres database via environment variables:
+- \`SUPABASE_SANDBOX_URL\` — the Supabase project URL
+- \`SUPABASE_SANDBOX_SERVICE_ROLE_KEY\` — service role key (full DDL access to the sandbox schema)
+- \`SUPABASE_SANDBOX_ANON_KEY\` — anon key (for client-side use in the app)
+
+**Schema: \`minions_sandbox\`** — you MUST use this schema for ALL database operations.
+
+### Rules
+- Create ALL tables in the \`minions_sandbox\` schema: \`CREATE TABLE minions_sandbox.my_table (...)\`
+- Enable RLS on every table: \`ALTER TABLE minions_sandbox.my_table ENABLE ROW LEVEL SECURITY\`
+- Create permissive RLS policies so the app can read/write data
+- Use \`@supabase/supabase-js\` in the app code with \`{ db: { schema: 'minions_sandbox' } }\`
+- For server-side (API routes): use the service role key
+- For client-side: use the anon key via \`NEXT_PUBLIC_SUPABASE_URL\` and \`NEXT_PUBLIC_SUPABASE_ANON_KEY\`
+- NEVER touch any schema other than \`minions_sandbox\`
+- To run migrations, use the Bash tool: \`npx supabase db push\` or raw SQL via the Supabase REST API
+` : ''}
 `)
     await logger.event('text', 'Wrote builder CLAUDE.md (headless mode instructions)')
 
@@ -173,8 +194,16 @@ ${spec}
 - NEVER modify .env files or add secrets
 - Run the build to verify your changes compile before finishing`
 
+    // Build sandbox database env vars for the CLI
+    const sandboxEnv: Record<string, string> = {}
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      sandboxEnv.SUPABASE_SANDBOX_URL = process.env.SUPABASE_URL
+      sandboxEnv.SUPABASE_SANDBOX_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+      sandboxEnv.SUPABASE_SANDBOX_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? ''
+    }
+
     await logger.event('text', `Running Claude CLI (spec: ${spec.length} chars)...`)
-    await runClaude({ prompt, workDir, timeoutMs: CLAUDE_TIMEOUT_MS, logger, logPrefix: `builder-${proposalId.slice(0, 8)}`, restrictedEnv: true })
+    await runClaude({ prompt, workDir, timeoutMs: CLAUDE_TIMEOUT_MS, logger, logPrefix: `builder-${proposalId.slice(0, 8)}`, restrictedEnv: true, extraEnv: sandboxEnv })
     await logger.event('text', 'Claude CLI finished')
 
     // 4. Validate with remediation loop
@@ -201,7 +230,7 @@ ${spec}
 ## Errors
 ${validationResult.errorOutput.slice(-4000)}`
 
-      await runClaude({ prompt: fixPrompt, workDir, timeoutMs: CLAUDE_TIMEOUT_MS / 2, logger, logPrefix: `builder-${proposalId.slice(0, 8)}`, restrictedEnv: true })
+      await runClaude({ prompt: fixPrompt, workDir, timeoutMs: CLAUDE_TIMEOUT_MS / 2, logger, logPrefix: `builder-${proposalId.slice(0, 8)}`, restrictedEnv: true, extraEnv: sandboxEnv })
       validationResult = validate(workDir, logger)
 
       if (validationResult.success) {
