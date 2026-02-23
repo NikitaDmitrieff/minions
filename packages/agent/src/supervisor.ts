@@ -67,9 +67,18 @@ let workerStartedAt = 0
 let restartCount = 0
 let lastDigestAt = Date.now()
 const digestEvents: string[] = []
-let pipelineStage = 'idle'      // Current activity: idle, scout, strategize, build, review
+let pipelineStage = 'idle'      // Current activity: idle, scout, strategize, build, review, fix_build
 let pipelineDetail = ''          // Extra context (proposal title, PR number, etc.)
+let stageStartedAt = 0           // Timestamp for elapsed time tracking
 const supabase = createSupabaseClient()
+
+function elapsed(): string {
+  if (!stageStartedAt) return ''
+  const ms = Date.now() - stageStartedAt
+  const s = Math.floor(ms / 1000) % 60
+  const m = Math.floor(ms / 60000)
+  return m > 0 ? `${m}m ${s}s` : `${s}s`
+}
 
 // ── Log Intelligence ────────────────────────────────────────────────────────
 /** Patterns to detect in worker stdout — triggers alerts and stage tracking. */
@@ -80,19 +89,41 @@ function analyzeWorkerLine(line: string): void {
   if (lower.includes('processing job') && lower.includes('type=scout')) {
     pipelineStage = 'scout'
     pipelineDetail = ''
-    console.log(`${c.magenta}${c.bold}  ┌─ STAGE: Scout analysis started${c.reset}`)
+    stageStartedAt = Date.now()
+    console.log(`\n${c.magenta}${c.bold}  ┌──────────────────────────────────────────────${c.reset}`)
+    console.log(`${c.magenta}${c.bold}  │  SCOUT — analyzing codebase${c.reset}`)
+    console.log(`${c.magenta}${c.bold}  ├──────────────────────────────────────────────${c.reset}`)
   } else if (lower.includes('processing job') && lower.includes('type=strategize')) {
     pipelineStage = 'strategize'
     pipelineDetail = ''
-    console.log(`${c.magenta}${c.bold}  ┌─ STAGE: Strategize started${c.reset}`)
+    stageStartedAt = Date.now()
+    console.log(`\n${c.magenta}${c.bold}  ┌──────────────────────────────────────────────${c.reset}`)
+    console.log(`${c.magenta}${c.bold}  │  STRATEGIZE — generating proposals${c.reset}`)
+    console.log(`${c.magenta}${c.bold}  ├──────────────────────────────────────────────${c.reset}`)
   } else if (lower.includes('processing job') && lower.includes('type=build')) {
     pipelineStage = 'build'
     const titleMatch = line.match(/issue_title.*?"([^"]+)"/) || line.match(/"title":"([^"]+)"/)
     pipelineDetail = titleMatch?.[1] ?? ''
-    console.log(`${c.green}${c.bold}  ┌─ STAGE: Build started${pipelineDetail ? ` — "${pipelineDetail}"` : ''}${c.reset}`)
+    stageStartedAt = Date.now()
+    console.log(`\n${c.green}${c.bold}  ┌──────────────────────────────────────────────${c.reset}`)
+    console.log(`${c.green}${c.bold}  │  BUILD${pipelineDetail ? ` — "${pipelineDetail}"` : ''}${c.reset}`)
+    console.log(`${c.green}${c.bold}  ├──────────────────────────────────────────────${c.reset}`)
+  } else if (lower.includes('processing job') && lower.includes('type=fix_build')) {
+    pipelineStage = 'fix_build'
+    stageStartedAt = Date.now()
+    const prMatch = line.match(/PR #(\d+)/) || line.match(/#(\d+)/)
+    pipelineDetail = prMatch ? `PR #${prMatch[1]}` : ''
+    console.log(`\n${c.yellow}${c.bold}  ┌──────────────────────────────────────────────${c.reset}`)
+    console.log(`${c.yellow}${c.bold}  │  FIX-BUILD — addressing review feedback${pipelineDetail ? ` (${pipelineDetail})` : ''}${c.reset}`)
+    console.log(`${c.yellow}${c.bold}  ├──────────────────────────────────────────────${c.reset}`)
   } else if (lower.includes('processing job') && lower.includes('type=review')) {
     pipelineStage = 'review'
-    console.log(`${c.yellow}${c.bold}  ┌─ STAGE: Review started${c.reset}`)
+    stageStartedAt = Date.now()
+    const prMatch = line.match(/PR #(\d+)/) || line.match(/#(\d+)/)
+    pipelineDetail = prMatch ? `PR #${prMatch[1]}` : ''
+    console.log(`\n${c.yellow}${c.bold}  ┌──────────────────────────────────────────────${c.reset}`)
+    console.log(`${c.yellow}${c.bold}  │  REVIEW${pipelineDetail ? ` — ${pipelineDetail}` : ''}${c.reset}`)
+    console.log(`${c.yellow}${c.bold}  ├──────────────────────────────────────────────${c.reset}`)
   }
 
   // ── Stage completion ──
@@ -100,22 +131,28 @@ function analyzeWorkerLine(line: string): void {
     pipelineStage = 'strategize-pending'
     const findingsMatch = line.match(/(\d+) new findings/)
     const count = findingsMatch?.[1] ?? '?'
-    console.log(`${c.magenta}  └─ Scout done: ${count} new findings${c.reset}`)
+    const dur = elapsed()
+    console.log(`${c.magenta}  │  ${count} new findings${c.reset}`)
+    console.log(`${c.magenta}  └── Scout done${dur ? ` (${dur})` : ''}${c.reset}\n`)
     queueDigestEvent(`Scout complete — ${count} new findings`)
   } else if (lower.includes('auto-approved and queued')) {
-    console.log(`${c.green}${c.bold}  └─ Strategize done — proposal approved, build queued${c.reset}`)
+    const dur = elapsed()
+    console.log(`${c.green}${c.bold}  └── Strategize done — proposal approved, build queued${dur ? ` (${dur})` : ''}${c.reset}\n`)
     queueDigestEvent('Strategize complete — proposal auto-approved')
   } else if (lower.includes('no draft proposals to auto-approve')) {
     pipelineStage = 'idle'
-    console.log(`${c.yellow}  └─ Strategize done — no viable proposals (all scored below threshold)${c.reset}`)
+    const dur = elapsed()
+    console.log(`${c.yellow}  └── Strategize done — no viable proposals${dur ? ` (${dur})` : ''}${c.reset}\n`)
     queueDigestEvent('Strategize complete — no viable proposals')
     sendSlack(`⚠️ Strategize produced no viable proposals (all scored below 0.6 threshold). Pipeline will idle until next scout.`)
   }
 
   // ── Immediate alerts ──
   if (lower.includes('no changes to commit')) {
+    const dur = elapsed()
     pipelineStage = 'idle'
-    console.log(`${c.red}${c.bold}  ⚠ BUILD PRODUCED NO CHANGES — Claude ran but didn't write any code${c.reset}`)
+    console.log(`${c.red}${c.bold}  │  NO CHANGES — Claude ran but didn't write any code${c.reset}`)
+    console.log(`${c.red}${c.bold}  └── Build failed${dur ? ` (${dur})` : ''}${c.reset}\n`)
     queueDigestEvent('Build produced no code changes')
     sendSlack(`⚠️ *Build produced no changes* — Claude CLI ran through the spec but didn't write any code. Proposal rejected, pipeline cycling.`)
   }
@@ -123,42 +160,80 @@ function analyzeWorkerLine(line: string): void {
   if (lower.includes('validation failed') || lower.includes('remediation attempts')) {
     const stageMatch = line.match(/failed at (\w+)/)
     const stage = stageMatch?.[1] ?? 'unknown'
-    console.log(`${c.red}${c.bold}  ⚠ BUILD VALIDATION FAILED at ${stage}${c.reset}`)
+    const dur = elapsed()
+    console.log(`${c.red}${c.bold}  │  VALIDATION FAILED at ${stage}${c.reset}`)
+    console.log(`${c.red}${c.bold}  └── Build failed${dur ? ` (${dur})` : ''}${c.reset}\n`)
     queueDigestEvent(`Build validation failed at ${stage}`)
     sendSlack(`❌ *Build failed validation* at \`${stage}\` after remediation attempts. Proposal rejected.`)
   }
 
   if (lower.includes('review rejected') || lower.includes('reviewer requested changes')) {
-    pipelineStage = 'idle'
     const prMatch = line.match(/PR #(\d+)/)
     const pr = prMatch?.[1] ?? '?'
-    console.log(`${c.yellow}${c.bold}  ⚠ REVIEW REJECTED PR #${pr}${c.reset}`)
-    queueDigestEvent(`Review rejected PR #${pr}`)
+    const dur = elapsed()
+    if (lower.includes('permanently rejecting') || lower.includes('fix attempt failed')) {
+      pipelineStage = 'idle'
+      console.log(`${c.red}${c.bold}  │  REJECTED (final) — fix attempt failed${c.reset}`)
+      console.log(`${c.red}${c.bold}  └── PR #${pr} rejected${dur ? ` (${dur})` : ''}${c.reset}\n`)
+      queueDigestEvent(`PR #${pr} permanently rejected after fix attempt`)
+    } else {
+      console.log(`${c.yellow}${c.bold}  │  Review rejected PR #${pr} — will retry with fix-build${c.reset}`)
+      queueDigestEvent(`Review rejected PR #${pr} — fix-build queued`)
+    }
+  }
+
+  if (lower.includes('fix-build complete')) {
+    const dur = elapsed()
+    const prMatch = line.match(/PR #(\d+)/)
+    const pr = prMatch?.[1] ?? '?'
+    console.log(`${c.green}  │  Fix pushed to PR #${pr}${c.reset}`)
+    console.log(`${c.green}  └── Fix-build done${dur ? ` (${dur})` : ''} — re-review queued${c.reset}\n`)
+    queueDigestEvent(`Fix-build complete for PR #${pr}`)
+  }
+
+  if (lower.includes('fix-build produced no changes')) {
+    const dur = elapsed()
+    pipelineStage = 'idle'
+    console.log(`${c.red}${c.bold}  │  Fix-build produced no changes${c.reset}`)
+    console.log(`${c.red}${c.bold}  └── Fix-build failed${dur ? ` (${dur})` : ''}${c.reset}\n`)
+    queueDigestEvent('Fix-build produced no changes — proposal rejected')
   }
 
   if (lower.includes('auto-merged') || lower.includes('merge complete')) {
     pipelineStage = 'idle'
     const prMatch = line.match(/PR #(\d+)/)
     const pr = prMatch?.[1] ?? '?'
-    console.log(`${c.green}${c.bold}  ✓ PR #${pr} MERGED SUCCESSFULLY${c.reset}`)
-    queueDigestEvent(`PR #${pr} auto-merged`)
+    console.log(`${c.green}${c.bold}  ┌──────────────────────────────────────────────${c.reset}`)
+    console.log(`${c.green}${c.bold}  │  MERGED — PR #${pr}${c.reset}`)
+    console.log(`${c.green}${c.bold}  └──────────────────────────────────────────────${c.reset}\n`)
+    queueDigestEvent(`Merged PR #${pr}`)
   }
 
   if (lower.includes('merge failed')) {
     pipelineStage = 'idle'
-    console.log(`${c.red}${c.bold}  ⚠ MERGE FAILED${c.reset}`)
+    console.log(`${c.red}${c.bold}  └── Merge failed${c.reset}\n`)
     queueDigestEvent('Merge failed')
   }
 
+  // ── Review approved ──
+  if (lower.includes('review approved')) {
+    const dur = elapsed()
+    const prMatch = line.match(/PR #(\d+)/)
+    const pr = prMatch?.[1] ?? '?'
+    console.log(`${c.green}${c.bold}  │  APPROVED — PR #${pr}${c.reset}`)
+    console.log(`${c.green}  └── Review done${dur ? ` (${dur})` : ''} — merging...${c.reset}\n`)
+    queueDigestEvent(`Review approved PR #${pr}`)
+  }
+
   // ── Progress indicators ──
-  if (lower.includes('running claude code cli')) {
-    console.log(`${c.cyan}  │  Claude CLI spawned — working on implementation...${c.reset}`)
+  if (lower.includes('running claude code cli') || lower.includes('running claude cli')) {
+    console.log(`${c.cyan}  │  Claude CLI spawned...${c.reset}`)
   }
-  if (lower.includes('claude cli finished')) {
-    console.log(`${c.cyan}  │  Claude CLI finished — validating changes...${c.reset}`)
+  if (lower.includes('installing dependencies')) {
+    console.log(`${c.gray}  │  Installing dependencies...${c.reset}`)
   }
-  if (lower.includes('validating:')) {
-    const stageMatch = line.match(/Validating: (\w+)/)
+  if (lower.includes('validating:') || lower.includes('validation:')) {
+    const stageMatch = line.match(/[Vv]alidat(?:ing|ion)[: ]+(\w+)/)
     if (stageMatch) {
       console.log(`${c.gray}  │  Validating: ${stageMatch[1]}...${c.reset}`)
     }
@@ -166,7 +241,16 @@ function analyzeWorkerLine(line: string): void {
   if (lower.includes('passed')) {
     const stageMatch = line.match(/(\w+) passed/)
     if (stageMatch) {
-      console.log(`${c.green}  │  ✓ ${stageMatch[1]} passed${c.reset}`)
+      console.log(`${c.green}  │  ✓ ${stageMatch[1]}${c.reset}`)
+    }
+  }
+  if (lower.includes('creating pr') || lower.includes('created pull request')) {
+    const prMatch = line.match(/PR #(\d+)/) || line.match(/#(\d+)/)
+    const pr = prMatch?.[1]
+    const dur = elapsed()
+    if (pr) {
+      console.log(`${c.green}${c.bold}  │  PR #${pr} created${c.reset}`)
+      console.log(`${c.green}  └── Build done${dur ? ` (${dur})` : ''} — review queued${c.reset}\n`)
     }
   }
 
@@ -267,7 +351,7 @@ async function sendDigest(): Promise<void> {
   const uptimeMin = Math.round((now - workerStartedAt) / 60000)
   const stageEmoji: Record<string, string> = {
     idle: '💤', scout: '🔭', strategize: '🧠', 'strategize-pending': '🧠',
-    build: '🔨', review: '🔍',
+    build: '🔨', review: '🔍', fix_build: '🔧',
   }
   const lines: string[] = [
     `🔄 *Minions Digest*`,
