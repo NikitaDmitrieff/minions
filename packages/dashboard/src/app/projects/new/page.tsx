@@ -4,6 +4,8 @@ import { generateApiKey } from '@/lib/api-keys'
 import crypto from 'node:crypto'
 import { SubmitButton } from './submit-button'
 
+export const dynamic = 'force-dynamic'
+
 export default function NewProjectPage() {
   async function createProject(formData: FormData) {
     'use server'
