@@ -1,4 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { claudeEnv } from './claude-cli.js'
 
 export type FailureCategory = 'docs_gap' | 'widget_bug' | 'agent_bug' | 'consumer_error' | 'transient'
 
@@ -19,71 +22,88 @@ interface ClassifyInput {
 
 const VALID_CATEGORIES: FailureCategory[] = ['docs_gap', 'widget_bug', 'agent_bug', 'consumer_error', 'transient']
 
-function getAnthropicClient(): Anthropic {
-  // API key is required for classification — OAuth tokens don't support direct API calls
-  if (process.env.ANTHROPIC_API_KEY) {
-    return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  }
-
-  // Fallback: let the SDK try default env vars
-  console.warn('[classify] No ANTHROPIC_API_KEY set — classification requires an API key (OAuth tokens are not supported for direct API calls)')
-  return new Anthropic()
-}
-
 export async function classifyFailure(input: ClassifyInput): Promise<FailureClassification | null> {
   const { logs, lastError, issueBody, jobType } = input
 
   if (logs.length === 0 && !lastError) return null
 
-  const logText = logs
-    .map((l) => `[${l.level}] ${l.message}`)
-    .join('\n')
+  const workDir = `/tmp/classify-${Date.now()}`
 
-  let response
   try {
-    const client = getAnthropicClient()
+    mkdirSync(workDir, { recursive: true })
 
-    response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      messages: [
-        {
-          role: 'user',
-          content: `You are analyzing a failed agent run. The agent tried to implement a feature on a consumer's Next.js repo using the @nikitadmitrieff/feedback-chat widget.
+    // Write context for the CLI to read
+    const logText = logs
+      .map((l) => `[${l.level}] ${l.message}`)
+      .join('\n')
 
-Classify this failure into ONE of these categories:
-- **docs_gap**: The failure happened because CLAUDE.md, installation instructions, or gotchas in the feedback-chat repo are incomplete or wrong. The agent didn't know how to handle a situation that should have been documented.
-- **widget_bug**: The failure happened because the widget's source code (packages/widget/) has a bug — wrong exports, broken CSS, incompatible patterns, etc.
-- **agent_bug**: The failure happened because the agent's own workflow logic (packages/agent/) is broken — cloning issues, validation logic, prompt construction, etc.
-- **consumer_error**: The failure is the consumer's fault — bad config, missing env vars, incompatible dependencies, unusual project structure that we shouldn't need to support.
-- **transient**: Network timeout, rate limit, flaky CI, GitHub API outage, or other temporary issue.
+    writeFileSync(join(workDir, 'context.md'), `# Failure Context
 
-Job type: ${jobType}
+## Job Type
+${jobType}
 
-Original issue body:
+## Original Issue Body
 ${issueBody.slice(0, 1000)}
 
-Last error:
+## Last Error
 ${lastError.slice(0, 1000)}
 
-Run logs (last entries):
+## Run Logs (last entries)
 ${logText.slice(-3000)}
+`)
 
-Respond with ONLY a JSON object (no markdown, no code fences):
-{"category": "one_of_the_five", "analysis": "One paragraph explaining what went wrong and why this category.", "fix_summary": "One sentence: what should be changed in the feedback-chat repo to prevent this. Use 'N/A' for consumer_error and transient."}`,
-        },
-      ],
+    writeFileSync(join(workDir, 'CLAUDE.md'), `# Classification Agent Instructions
+
+## CRITICAL: HEADLESS mode. NO human interaction.
+
+- NEVER call AskUserQuestion
+- NEVER use EnterPlanMode
+- Read context.md and classify the failure
+- Write classification.json in this directory
+`)
+
+    const prompt = `Read context.md and classify this agent failure into exactly ONE category:
+
+- **docs_gap**: CLAUDE.md, installation instructions, or gotchas are incomplete/wrong. The agent didn't know how to handle a documented situation.
+- **widget_bug**: The widget's source code has a bug — wrong exports, broken CSS, incompatible patterns.
+- **agent_bug**: The agent's own workflow logic is broken — cloning issues, validation logic, prompt construction.
+- **consumer_error**: Consumer's fault — bad config, missing env vars, incompatible dependencies, unusual project structure.
+- **transient**: Network timeout, rate limit, flaky CI, GitHub API outage, or other temporary issue.
+
+Write a file called classification.json containing:
+{"category": "one_of_the_five", "analysis": "What went wrong and why this category", "fix_summary": "What to change to prevent this (N/A for consumer_error and transient)"}
+
+IMPORTANT: You MUST create classification.json before finishing.`
+
+    const env = await claudeEnv(true)
+    execFileSync('claude', [
+      '--dangerously-skip-permissions', '--permission-mode', 'dontAsk',
+      '--model', 'claude-sonnet-4-6', '--output-format', 'text',
+      '--max-turns', '3', '-p', prompt,
+    ], {
+      cwd: workDir,
+      timeout: 120_000,
+      encoding: 'utf-8',
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
     })
-  } catch (err) {
-    console.error('[classify] Haiku API call failed:', err instanceof Error ? err.message : err)
-    return null
-  }
 
-  try {
-    const text = response.content[0].type === 'text' ? response.content[0].text : ''
-    // Strip markdown code fences if Haiku wraps the JSON
+    const resultPath = join(workDir, 'classification.json')
+    if (!existsSync(resultPath)) {
+      console.error('[classify] CLI did not create classification.json')
+      return null
+    }
+
+    const text = readFileSync(resultPath, 'utf-8')
+    // Strip markdown fences if present
     const cleaned = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim()
-    const parsed = JSON.parse(cleaned)
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+      console.error('[classify] No valid JSON in classification.json')
+      return null
+    }
+
+    const parsed = JSON.parse(jsonMatch[0])
 
     if (!VALID_CATEGORIES.includes(parsed.category)) {
       console.error('[classify] Invalid category:', parsed.category)
@@ -95,9 +115,10 @@ Respond with ONLY a JSON object (no markdown, no code fences):
       analysis: String(parsed.analysis || ''),
       fix_summary: String(parsed.fix_summary || ''),
     }
-  } catch {
-    const text = response.content[0].type === 'text' ? response.content[0].text : ''
-    console.error('[classify] Failed to parse Haiku response:', text.slice(0, 300))
+  } catch (err) {
+    console.error('[classify] CLI classification failed:', err instanceof Error ? err.message : err)
     return null
+  } finally {
+    if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true })
   }
 }

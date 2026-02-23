@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import Anthropic from '@anthropic-ai/sdk'
 import { runClaude } from './claude-cli.js'
 import { DbLogger } from './logger.js'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -20,13 +19,6 @@ const MAX_PROPOSALS_PER_RUN = 3
 const MIN_SCORE_THRESHOLD = 0.6
 const STEP_TIMEOUT_MS = 10 * 60 * 1000
 const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000
-
-function getAnthropicClient(): Anthropic {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY is required for strategize scoring (direct API calls)')
-  }
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-}
 
 export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
   const { jobId, projectId, supabase } = input
@@ -123,6 +115,7 @@ export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
 
   let rawProposals: Array<{
     title: string; rationale: string; spec: string; priority: string
+    scores?: { impact: number; feasibility: number; novelty: number; alignment: number }
   }> = []
 
   try {
@@ -195,6 +188,14 @@ Rules:
 - Do NOT re-propose anything from the "already proposed" list
 - Spec must be detailed enough for a coding agent to implement in one PR${wildCardInstructions}
 
+## Self-Assessment
+After formulating each proposal, score it honestly on 4 dimensions (0.0 to 1.0):
+- impact: How impressive and useful? "Wow" factor (innovative/delightful = high, boring/incremental = low)
+- feasibility: Can a coding agent implement this in one PR? (clear spec + reasonable scope = high, vague/massive = low)
+- novelty: Genuinely new and creative? (never seen before = high, common pattern = medium, already exists = low)
+- alignment: Matches the product vision?
+Be critical — not every proposal deserves high scores. Proposals below 0.6 average will be filtered out.
+
 ## Output
 Write a file called proposals.json in the project root containing a JSON array:
 [
@@ -202,7 +203,8 @@ Write a file called proposals.json in the project root containing a JSON array:
     "title": "Short imperative title (e.g., Build a generative art landing page)",
     "rationale": "Why this is exciting and what it adds to the product",
     "spec": "Detailed implementation spec: exact components to create, layout, interactions, animations, data flow. Be specific and creative.",
-    "priority": "high|medium|low"
+    "priority": "high|medium|low",
+    "scores": {"impact": 0.8, "feasibility": 0.7, "novelty": 0.9, "alignment": 0.85}
   }
 ]
 
@@ -247,41 +249,9 @@ IMPORTANT: You MUST create the proposals.json file before finishing. This is you
 
   if (rawProposals.length === 0) return
 
-  // 4. Score each proposal with multi-grader evaluation (Haiku — fast + cheap)
-  const anthropic = getAnthropicClient()
-
+  // 4. Filter and insert proposals (scored by CLI)
   for (const raw of rawProposals.slice(0, MAX_PROPOSALS_PER_RUN)) {
-    const scoreResponse = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 500,
-      messages: [{
-        role: 'user',
-        content: `Score this feature proposal on 4 dimensions (0.0 to 1.0):
-
-Title: ${raw.title}
-Rationale: ${raw.rationale}
-Spec: ${raw.spec}
-
-Score each dimension:
-- impact: How impressive and useful is this feature? Would it make someone say "wow"? (innovative/delightful = high, boring/incremental = low)
-- feasibility: Can a coding agent implement this in one PR? (clear spec + reasonable scope = high, vague or massive = low)
-- novelty: Is this genuinely new and creative? (never seen before = high, common pattern = medium, already exists = low)
-- alignment: Does this match the product vision?${project.product_context ? ` Vision: ${project.product_context}` : ''}
-
-Respond in JSON only:
-\`\`\`json
-{"impact": 0.8, "feasibility": 0.7, "novelty": 0.9, "alignment": 0.85}
-\`\`\``,
-      }],
-    })
-
-    const scoreText = scoreResponse.content[0].type === 'text' ? scoreResponse.content[0].text : ''
-    const scoreMatch = scoreText.match(/\{[\s\S]*?\}/)
-    let scores = { impact: 0.5, feasibility: 0.5, novelty: 0.5, alignment: 0.5 }
-    try {
-      scores = JSON.parse(scoreMatch?.[0] ?? '{}')
-    } catch { /* use defaults */ }
-
+    const scores = raw.scores ?? { impact: 0.5, feasibility: 0.5, novelty: 0.5, alignment: 0.5 }
     const avgScore = (scores.impact + scores.feasibility + scores.novelty + scores.alignment) / 4
     if (avgScore < MIN_SCORE_THRESHOLD) {
       console.log(`[strategize] Proposal "${raw.title}" scored ${avgScore.toFixed(2)} — below threshold, skipping`)

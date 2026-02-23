@@ -1,9 +1,9 @@
-import { execSync, execFileSync } from 'node:child_process'
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
-import { join, extname, relative } from 'node:path'
-import Anthropic from '@anthropic-ai/sdk'
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { getInstallationToken, isGitHubAppConfigured } from './github-app.js'
-import { redactToken } from './sanitize.js'
+import { runClaude } from './claude-cli.js'
+import { DbLogger } from './logger.js'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -34,128 +34,8 @@ const CATEGORIES = [
   'dx',
 ] as const
 
-const SKIP_DIRS = new Set([
-  'node_modules', '.git', 'dist', 'build', '.next', '.vercel',
-  '.turbo', 'coverage', '__pycache__', '.cache', 'vendor',
-])
-
-const CODE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java',
-  '.rb', '.php', '.vue', '.svelte', '.css', '.scss', '.html',
-  '.json', '.yaml', '.yml', '.toml', '.md',
-])
-
-const MAX_SAMPLE_FILES = 30
-const MAX_FILE_SIZE = 50_000 // 50KB per file
-const STEP_TIMEOUT_MS = 2 * 60 * 1000
-
-function run(cmd: string, cwd: string, timeoutMs = STEP_TIMEOUT_MS): string {
-  try {
-    return execSync(cmd, {
-      cwd,
-      timeout: timeoutMs,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, CI: 'true' },
-    })
-  } catch (err: unknown) {
-    const e = err as { stderr?: string; stdout?: string; status?: number }
-    throw new Error(`Command failed: ${redactToken(cmd)}\nExit ${e.status}\n${redactToken((e.stderr || '').slice(-1000))}`)
-  }
-}
-
-function getAnthropicClient(): Anthropic {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY is required for scout jobs')
-  }
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-}
-
-/** Recursively collect code files, respecting skip dirs and extension filters. */
-function collectFiles(dir: string, rootDir: string, files: string[] = []): string[] {
-  if (files.length >= MAX_SAMPLE_FILES * 3) return files // collect more than needed, trim later
-
-  let entries: string[]
-  try {
-    entries = readdirSync(dir)
-  } catch {
-    return files
-  }
-
-  for (const entry of entries) {
-    if (SKIP_DIRS.has(entry)) continue
-    const fullPath = join(dir, entry)
-    let stat
-    try {
-      stat = statSync(fullPath)
-    } catch {
-      continue
-    }
-
-    if (stat.isDirectory()) {
-      collectFiles(fullPath, rootDir, files)
-    } else if (stat.isFile() && CODE_EXTENSIONS.has(extname(entry).toLowerCase())) {
-      if (stat.size > 0 && stat.size <= MAX_FILE_SIZE) {
-        files.push(relative(rootDir, fullPath))
-      }
-    }
-  }
-
-  return files
-}
-
-/** Sample up to MAX_SAMPLE_FILES from the collected list, prioritizing diverse directories. */
-function sampleFiles(allFiles: string[]): string[] {
-  if (allFiles.length <= MAX_SAMPLE_FILES) return allFiles
-
-  // Group by top-level directory
-  const groups = new Map<string, string[]>()
-  for (const f of allFiles) {
-    const topDir = f.split('/')[0] || '_root'
-    if (!groups.has(topDir)) groups.set(topDir, [])
-    groups.get(topDir)!.push(f)
-  }
-
-  // Round-robin from each group
-  const result: string[] = []
-  const iterators = [...groups.values()].map(g => ({ items: g, idx: 0 }))
-
-  while (result.length < MAX_SAMPLE_FILES) {
-    let added = false
-    for (const iter of iterators) {
-      if (iter.idx < iter.items.length && result.length < MAX_SAMPLE_FILES) {
-        result.push(iter.items[iter.idx++])
-        added = true
-      }
-    }
-    if (!added) break
-  }
-
-  return result
-}
-
-/** Read file contents for analysis, truncating large files. */
-function readSampleContents(workDir: string, files: string[]): string {
-  const parts: string[] = []
-  let totalChars = 0
-  const MAX_TOTAL = 100_000
-
-  for (const f of files) {
-    if (totalChars >= MAX_TOTAL) break
-    try {
-      let content = readFileSync(join(workDir, f), 'utf-8')
-      if (content.length > 3000) {
-        content = content.slice(0, 3000) + '\n... (truncated)'
-      }
-      parts.push(`### ${f}\n\`\`\`\n${content}\n\`\`\``)
-      totalChars += content.length
-    } catch {
-      // Skip unreadable files
-    }
-  }
-
-  return parts.join('\n\n')
-}
+const STEP_TIMEOUT_MS = 10 * 60 * 1000
+const CLAUDE_TIMEOUT_MS = 20 * 60 * 1000
 
 /** Generate a stable fingerprint for deduplication. */
 function fingerprint(category: string, title: string, filePath: string | null): string {
@@ -168,83 +48,6 @@ function fingerprint(category: string, title: string, filePath: string | null): 
     hash = hash & hash // Convert to 32-bit int
   }
   return `scout-${Math.abs(hash).toString(36)}`
-}
-
-/** Analyze files for a single category using Haiku. */
-async function analyzeCategory(
-  anthropic: Anthropic,
-  category: string,
-  fileContents: string,
-  projectName: string,
-  riskPaths: string[],
-): Promise<Finding[]> {
-  const categoryDescriptions: Record<string, string> = {
-    bug_risk: 'potential bugs, race conditions, null pointer issues, incorrect logic, missing error handling in critical paths',
-    tech_debt: 'code duplication, overly complex functions, deprecated patterns, poor abstractions, dead code',
-    security: 'hardcoded secrets, SQL injection, XSS, insecure dependencies, missing auth checks, unsafe data handling',
-    performance: 'N+1 queries, unnecessary re-renders, missing memoization, synchronous I/O in hot paths, memory leaks',
-    accessibility: 'missing ARIA labels, poor keyboard navigation, insufficient color contrast, missing alt text',
-    testing_gap: 'untested critical paths, missing edge case coverage, no integration tests for key flows',
-    dx: 'missing types, poor naming, unclear error messages, missing documentation for public APIs',
-  }
-
-  const riskPathsHint = riskPaths.length > 0
-    ? `\nPay special attention to these risk paths flagged by the project owner: ${riskPaths.join(', ')}`
-    : ''
-
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1500,
-    messages: [{
-      role: 'user',
-      content: `You are a code quality scout analyzing "${projectName}" for: ${categoryDescriptions[category] || category}.
-${riskPathsHint}
-
-Review these source files and identify 0-3 concrete findings. Only report real issues you can see evidence for — do NOT fabricate or speculate.
-
-${fileContents}
-
-Respond in JSON only. No markdown fences, no explanation:
-[
-  {
-    "title": "Short descriptive title",
-    "description": "What the issue is and why it matters",
-    "file_path": "path/to/file.ts or null if general",
-    "severity": "critical|high|medium|low",
-    "evidence": "The specific code pattern or line that demonstrates the issue"
-  }
-]
-
-If no issues found, return an empty array: []`,
-    }],
-  })
-
-  const text = response.content[0].type === 'text' ? response.content[0].text : ''
-  // Strip markdown fences if Haiku wraps them
-  const cleaned = text.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '')
-  const jsonMatch = cleaned.match(/\[[\s\S]*\]/)
-  if (!jsonMatch) return []
-
-  try {
-    const parsed = JSON.parse(jsonMatch[0]) as Array<{
-      title: string
-      description: string
-      file_path: string | null
-      severity: string
-      evidence: string | null
-    }>
-    return parsed.map(f => ({
-      category,
-      severity: ['critical', 'high', 'medium', 'low'].includes(f.severity) ? f.severity : 'medium',
-      title: f.title,
-      description: f.description,
-      file_path: f.file_path || null,
-      evidence: f.evidence || null,
-    }))
-  } catch {
-    console.log(`[scout] Failed to parse ${category} response`)
-    return []
-  }
 }
 
 /** Compute health score from findings breakdown. */
@@ -283,7 +86,8 @@ function computeHealthScore(findings: { category: string; severity: string }[]):
 }
 
 export async function runScoutJob(input: ScoutInput): Promise<void> {
-  const { projectId, supabase } = input
+  const { jobId, projectId, supabase } = input
+  const logger = new DbLogger(supabase, jobId)
 
   // 1. Fetch project details
   const { data: project } = await supabase
@@ -297,10 +101,10 @@ export async function runScoutJob(input: ScoutInput): Promise<void> {
     return
   }
 
-  const workDir = `/tmp/scout-${projectId.slice(0, 8)}`
+  const workDir = `/tmp/scout-${jobId.slice(0, 8)}`
   const [owner, repo] = project.github_repo.split('/')
 
-  console.log(`[scout] Starting analysis of ${project.github_repo}`)
+  console.log(`[scout] Starting CLI analysis of ${project.github_repo}`)
 
   try {
     // 2. Clone repo (sandboxed — disable hooks)
@@ -316,45 +120,118 @@ export async function runScoutJob(input: ScoutInput): Promise<void> {
     }
 
     const branch = project.default_branch || 'main'
+    await logger.event('text', `Cloning ${project.github_repo} (branch: ${branch}) for scout...`)
     execFileSync(
       'git',
       ['clone', '--depth=1', '--branch', branch,
+       '-c', 'core.hooksPath=/dev/null',
        `https://x-access-token:${token}@github.com/${owner}/${repo}.git`, workDir],
       { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
     )
-    // Safety: disable hooks in cloned repo
-    run('git config core.hooksPath /dev/null', workDir)
 
     console.log(`[scout] Cloned ${project.github_repo} (branch: ${branch})`)
 
-    // 3. Sample files
-    const allFiles = collectFiles(workDir, workDir)
-    const sampledFiles = sampleFiles(allFiles)
-    console.log(`[scout] Sampled ${sampledFiles.length} files from ${allFiles.length} total`)
+    // 3. Write headless CLAUDE.md
+    const riskPaths = Array.isArray(project.risk_paths) ? project.risk_paths as string[] : []
+    writeFileSync(join(workDir, 'CLAUDE.md'), `# Scout Agent Instructions
 
-    if (sampledFiles.length === 0) {
-      console.log('[scout] No code files found, skipping analysis')
-      return
+## CRITICAL: HEADLESS mode. NO human interaction.
+
+- NEVER use brainstorming skill
+- NEVER call AskUserQuestion
+- NEVER use EnterPlanMode
+- You are a code quality scout analyzing this codebase
+- Read the source files, understand the architecture
+- Write your findings to findings.json in the project root
+`)
+
+    const riskPathsHint = riskPaths.length > 0
+      ? `\nPay special attention to these risk paths flagged by the project owner: ${riskPaths.join(', ')}`
+      : ''
+
+    const prompt = `You are a code quality scout analyzing "${project.name}" (${owner}/${repo}).
+
+Explore this codebase and analyze it for issues across these 7 categories:
+1. **bug_risk**: potential bugs, race conditions, null pointer issues, incorrect logic, missing error handling in critical paths
+2. **tech_debt**: code duplication, overly complex functions, deprecated patterns, poor abstractions, dead code
+3. **security**: hardcoded secrets, SQL injection, XSS, insecure dependencies, missing auth checks, unsafe data handling
+4. **performance**: N+1 queries, unnecessary re-renders, missing memoization, synchronous I/O in hot paths, memory leaks
+5. **accessibility**: missing ARIA labels, poor keyboard navigation, insufficient color contrast, missing alt text
+6. **testing_gap**: untested critical paths, missing edge case coverage, no integration tests for key flows
+7. **dx**: missing types, poor naming, unclear error messages, missing documentation for public APIs
+${riskPathsHint}
+
+## Your Process
+1. Read the project structure (package.json, config files, directory layout)
+2. Read key source files across the codebase
+3. Identify REAL, CONCRETE issues with evidence from the code
+4. Write your findings to findings.json
+
+## Rules
+- Only report issues you can see evidence for — do NOT fabricate or speculate
+- 0-3 findings per category (max ~15 total)
+- Each finding must reference a specific file and describe a specific issue
+- Severity: critical (breaks things), high (significant risk), medium (should fix), low (nice to have)
+
+## Output
+Write a file called findings.json in the project root containing a JSON array:
+[
+  {
+    "category": "bug_risk|tech_debt|security|performance|accessibility|testing_gap|dx",
+    "title": "Short descriptive title",
+    "description": "What the issue is and why it matters",
+    "file_path": "path/to/file.ts or null if general",
+    "severity": "critical|high|medium|low",
+    "evidence": "The specific code pattern or line that demonstrates the issue"
+  }
+]
+
+If no issues found, return an empty array: []
+
+IMPORTANT: You MUST create findings.json before finishing.`
+
+    await logger.event('text', 'Running Claude CLI scout...')
+    await runClaude({
+      prompt,
+      workDir,
+      timeoutMs: CLAUDE_TIMEOUT_MS,
+      logger,
+      logPrefix: `scout-${jobId.slice(0, 8)}`,
+      restrictedEnv: true,
+    })
+
+    // 4. Read findings from file
+    const findingsPath = join(workDir, 'findings.json')
+    let allFindings: Finding[] = []
+
+    if (!existsSync(findingsPath)) {
+      console.log('[scout] CLI did not create findings.json')
+      await logger.event('text', 'CLI did not create findings.json — no findings')
+    } else {
+      const findingsText = readFileSync(findingsPath, 'utf-8')
+      const jsonMatch = findingsText.match(/\[[\s\S]*\]/)
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]) as Array<{
+            category: string; title: string; description: string;
+            file_path: string | null; severity: string; evidence: string | null
+          }>
+          allFindings = parsed.map(f => ({
+            category: CATEGORIES.includes(f.category as typeof CATEGORIES[number]) ? f.category : 'dx',
+            severity: ['critical', 'high', 'medium', 'low'].includes(f.severity) ? f.severity : 'medium',
+            title: f.title,
+            description: f.description,
+            file_path: f.file_path || null,
+            evidence: f.evidence || null,
+          }))
+        } catch {
+          console.log('[scout] Failed to parse findings.json')
+        }
+      }
     }
 
-    const fileContents = readSampleContents(workDir, sampledFiles)
-
-    // 4. Analyze all 7 categories in parallel via Haiku
-    const anthropic = getAnthropicClient()
-    const riskPaths = Array.isArray(project.risk_paths) ? project.risk_paths as string[] : []
-
-    const categoryResults = await Promise.all(
-      CATEGORIES.map(cat =>
-        analyzeCategory(anthropic, cat, fileContents, project.name, riskPaths)
-          .catch(err => {
-            console.error(`[scout] Category ${cat} failed:`, err instanceof Error ? err.message : err)
-            return [] as Finding[]
-          })
-      )
-    )
-
-    const allFindings = categoryResults.flat()
     console.log(`[scout] Found ${allFindings.length} findings across ${CATEGORIES.length} categories`)
+    await logger.event('text', `Scout found ${allFindings.length} findings`)
 
     // 5. Deduplicate against existing open findings
     const { data: existingFindings } = await supabase
@@ -405,7 +282,6 @@ export async function runScoutJob(input: ScoutInput): Promise<void> {
       event_data: {
         total_findings: allFindings.length,
         new_findings: newFindings.length,
-        files_scanned: sampledFiles.length,
         categories: Object.fromEntries(
           CATEGORIES.map(cat => [cat, allFindings.filter(f => f.category === cat).length])
         ),
@@ -414,7 +290,6 @@ export async function runScoutJob(input: ScoutInput): Promise<void> {
     })
 
     // 8. Compute and store health snapshot
-    // Count all open findings (existing + new)
     const { count: openCount } = await supabase
       .from('findings')
       .select('id', { count: 'exact', head: true })
@@ -427,7 +302,6 @@ export async function runScoutJob(input: ScoutInput): Promise<void> {
       .eq('project_id', projectId)
       .eq('status', 'addressed')
 
-    // For health score, use all currently open findings
     const { data: openFindings } = await supabase
       .from('findings')
       .select('category, severity')
@@ -449,7 +323,6 @@ export async function runScoutJob(input: ScoutInput): Promise<void> {
     })
 
     if (snapError) {
-      // Unique constraint violation is expected if we already ran today — just log
       console.log(`[scout] Health snapshot: ${snapError.message}`)
     }
 

@@ -158,7 +158,7 @@ export async function PATCH(
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    // Create GitHub issue
+    // Create GitHub issue (for tracking — not for triggering the build)
     let issueNumber: number | null = null
     try {
       issueNumber = await createGitHubIssue(supabase, projectId, proposal.title, finalSpec, userNotes, branchName)
@@ -170,6 +170,34 @@ export async function PATCH(
       }
     } catch (err) {
       console.error('[proposals] Failed to create GitHub issue:', err)
+    }
+
+    // Create build job directly — don't rely on webhook round-trip
+    const finalBranch = branchName
+      || `proposals/${proposal.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '').slice(0, 50)}`
+
+    const { data: job } = await supabase.from('job_queue').insert({
+      project_id: projectId,
+      github_issue_number: issueNumber ?? 0,
+      issue_title: proposal.title,
+      issue_body: JSON.stringify({
+        proposal_id: proposalId,
+        branch_name: finalBranch,
+        spec: finalSpec,
+        title: proposal.title,
+      }),
+      job_type: 'build',
+      status: 'pending',
+    }).select('id').single()
+
+    if (job) {
+      await supabase.from('pipeline_runs').insert({
+        job_id: job.id,
+        project_id: projectId,
+        github_issue_number: issueNumber ?? 0,
+        stage: 'queued',
+        triggered_by: 'user',
+      })
     }
 
     // Record in strategy memory with edit distance

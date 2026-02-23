@@ -276,10 +276,9 @@ function analyzeWorkerLine(line: string): void {
     queueDigestEvent(`Proposal created: "${passedScoreMatch[1]}" (score: ${passedScoreMatch[2]})`)
   }
 
-  // ── Rate limiting ──
+  // ── Rate limiting (terminal only, not worth a digest event) ──
   if (lower.includes('rate limit')) {
     console.log(`${c.yellow}  │  ⏳ Rate limited — waiting for capacity${c.reset}`)
-    queueDigestEvent('Rate limited during build')
   }
 
   // ── Error detection ──

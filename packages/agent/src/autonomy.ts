@@ -38,6 +38,10 @@ async function getProjectToken(supabase: Supabase, projectId: string): Promise<{
   return { token, repo: project.github_repo }
 }
 
+function ghPrLink(repo: string, prNumber: number): string {
+  return `<https://github.com/${repo}/pull/${prNumber}|PR #${prNumber}>`
+}
+
 function slugify(title: string): string {
   return title
     .toLowerCase()
@@ -268,7 +272,7 @@ export async function autoMergePR(
       return
     }
 
-    // Squash merge — with conflict handling
+    // Squash merge — with conflict resolution
     let mergeResult: { sha: string }
     try {
       const { data } = await octokit.pulls.merge({
@@ -280,6 +284,77 @@ export async function autoMergePR(
       mergeResult = data
     } catch (mergeErr: unknown) {
       const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr)
+      const isConflict = msg.toLowerCase().includes('not mergeable') || msg.toLowerCase().includes('merge conflict')
+
+      if (isConflict) {
+        // Conflict detected — try GitHub's update-branch API first
+        console.log(`[autonomy] PR #${payload.pr_number} has conflicts — attempting auto-update branch`)
+        try {
+          await octokit.request('PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch', {
+            owner,
+            repo: repoName,
+            pull_number: payload.pr_number,
+            expected_head_sha: pr.head.sha,
+          })
+
+          // Branch updated successfully — re-trigger review with new HEAD
+          console.log(`[autonomy] Branch updated via API — re-queuing review for PR #${payload.pr_number}`)
+          await notifySlack(`🔀 *Conflict resolved* via branch update — re-reviewing ${ghPrLink(repo, payload.pr_number)}`)
+          await supabase.from('branch_events').insert({
+            project_id: projectId,
+            branch_name: payload.branch_name,
+            event_type: 'branch_updated',
+            event_data: { pr_number: payload.pr_number, reason: 'conflict_resolution' },
+            actor: 'autonomy',
+          })
+
+          // Re-queue review (HEAD changed after update)
+          await supabase.from('job_queue').insert({
+            project_id: projectId,
+            github_issue_number: 0,
+            issue_title: `Re-review PR #${payload.pr_number} after conflict resolution`,
+            issue_body: JSON.stringify({
+              proposal_id: payload.proposal_id,
+              pr_number: payload.pr_number,
+              branch_name: payload.branch_name,
+              remediation_attempt: 0,
+            }),
+            job_type: 'review',
+            status: 'pending',
+          })
+          return
+        } catch {
+          // Auto-update failed (real conflicts) — queue fix_build to resolve manually
+          console.log(`[autonomy] Auto-update failed — queuing fix_build to resolve conflicts for PR #${payload.pr_number}`)
+          await notifySlack(`⚠️ *Merge conflict* on ${ghPrLink(repo, payload.pr_number)} — spawning fix-build to resolve`)
+          await supabase.from('branch_events').insert({
+            project_id: projectId,
+            branch_name: payload.branch_name,
+            event_type: 'merge_conflict',
+            event_data: { pr_number: payload.pr_number },
+            actor: 'autonomy',
+          })
+
+          await supabase.from('job_queue').insert({
+            project_id: projectId,
+            github_issue_number: 0,
+            issue_title: `Resolve conflicts on PR #${payload.pr_number}`,
+            issue_body: JSON.stringify({
+              proposal_id: payload.proposal_id,
+              pr_number: payload.pr_number,
+              branch_name: payload.branch_name,
+              review_summary: 'Merge conflict with main branch. Merge main into this branch and resolve all conflicts.',
+              review_concerns: [{ file: 'multiple', severity: 'high', comment: 'Merge conflicts with main — resolve and ensure the feature still works correctly after merging.' }],
+              remediation_attempt: 0,
+            }),
+            job_type: 'fix_build',
+            status: 'pending',
+          })
+          return
+        }
+      }
+
+      // Non-conflict merge failure — reject proposal
       console.log(`[autonomy] Merge failed for PR #${payload.pr_number}: ${msg}`)
       await supabase.from('branch_events').insert({
         project_id: projectId,

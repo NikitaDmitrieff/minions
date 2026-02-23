@@ -1,5 +1,4 @@
 import { createSupabaseClient } from './supabase.js'
-import { runManagedJob } from './worker.js'
 // setup-worker stripped for minions (no consumer setup flow)
 import { classifyFailure } from './classify-failure.js'
 import { runSelfImproveJob } from './self-improve-worker.js'
@@ -186,29 +185,6 @@ async function pollForJobs(supabase: Supabase) {
   return job
 }
 
-async function fetchCredentials(supabase: Supabase, projectId: string) {
-  const { data } = await supabase
-    .from('credentials')
-    .select('type, encrypted_value')
-    .eq('project_id', projectId)
-    .single()
-
-  if (data) {
-    return {
-      claudeCredentials: data.type === 'claude_oauth' ? data.encrypted_value : undefined,
-      anthropicApiKey: data.type === 'anthropic_api_key' ? data.encrypted_value : undefined,
-    }
-  }
-
-  // Fall back to system credentials (the dashboard owner's credential)
-  const claudeCredentials = process.env.CLAUDE_CREDENTIALS_JSON
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY
-  if (!claudeCredentials && !anthropicApiKey) {
-    throw new Error(`No credentials for project ${projectId} and no system credential configured`)
-  }
-  console.log(`[${WORKER_ID}] No project credential found — using system credential`)
-  return { claudeCredentials, anthropicApiKey }
-}
 
 async function fetchGithubConfig(supabase: Supabase, projectId: string) {
   const { data: project } = await supabase
@@ -744,21 +720,7 @@ async function processJob(supabase: Supabase, job: {
         await checkCycleCompletion(supabase, job.project_id, fixPayload.proposal_id!)
       }
     } else {
-      // Default: implement job (existing flow)
-      const creds = await fetchCredentials(supabase, job.project_id)
-      const github = await fetchGithubConfig(supabase, job.project_id)
-      const runId = await findRunId(supabase, job.project_id, job.github_issue_number)
-
-      await runManagedJob({
-        issueNumber: job.github_issue_number,
-        issueTitle: job.issue_title,
-        issueBody: job.issue_body,
-        projectId: job.project_id,
-        github,
-        ...creds,
-        runId,
-        supabase,
-      })
+      throw new Error(`Unknown job_type: ${job.job_type}`)
     }
 
     await supabase

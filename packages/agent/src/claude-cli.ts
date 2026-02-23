@@ -3,8 +3,7 @@
  * Used by both worker.ts (agent jobs) and builder-worker.ts (build jobs).
  *
  * IMPORTANT: Claude CLI MUST use OAuth (Max subscription) only.
- * ANTHROPIC_API_KEY is NEVER passed to the CLI — it is reserved for
- * direct Anthropic SDK calls (Haiku classification, proposal scoring, review).
+ * ANTHROPIC_API_KEY is NEVER passed to the CLI.
  * If OAuth is not configured or fails, the CLI job must fail loudly.
  */
 import { spawn } from 'node:child_process'

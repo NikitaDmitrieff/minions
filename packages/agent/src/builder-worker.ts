@@ -282,16 +282,30 @@ ${validationResult.errorOutput.slice(-4000)}`
     )
 
     const headSha = getHeadSha(workDir)
+
+    // Refresh token before push — installation tokens expire after 1 hour
+    let pushToken = token
+    if (project.github_installation_id) {
+      const { getInstallationToken, isGitHubAppConfigured } = await import('./github-app.js')
+      if (isGitHubAppConfigured()) {
+        pushToken = await getInstallationToken(project.github_installation_id)
+      }
+    }
+    execFileSync('git', ['remote', 'set-url', 'origin',
+      `https://x-access-token:${pushToken}@github.com/${project.github_repo}.git`],
+      { cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+
     await logger.event('text', `Pushing to origin/${branchName} (SHA: ${headSha.slice(0, 7)})...`)
     execFileSync('git', ['push', '-u', 'origin', branchName], {
       cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
     })
     await logger.event('text', 'Push complete')
 
-    // 6. Create PR via Octokit
+    // 6. Create PR via Octokit (use fresh token)
+    const pushOctokit = new Octokit({ auth: pushToken })
     await logger.event('text', 'Creating pull request...')
 
-    const { data: pr } = await octokit.pulls.create({
+    const { data: pr } = await pushOctokit.pulls.create({
       owner,
       repo,
       title: `feat: ${title}`,
@@ -388,10 +402,39 @@ export async function runFixBuildJob(input: FixBuildInput): Promise<{
     if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true })
 
     execFileSync('git', [
-      'clone', '--depth=10', '-b', branchName,
+      'clone', '--depth=50', '-b', branchName,
       '-c', 'core.hooksPath=/dev/null',
       `https://x-access-token:${token}@github.com/${project.github_repo}.git`, workDir,
     ], { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+
+    // Fetch main and attempt merge — so fixes are applied on top of latest main
+    const isConflictFix = reviewSummary.toLowerCase().includes('merge conflict')
+    try {
+      execFileSync('git', ['fetch', 'origin', 'main', '--depth=50'], {
+        cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      // Set git identity for merge commit
+      execFileSync('git', ['config', 'user.email', 'minions@bot.dev'], {
+        cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      execFileSync('git', ['config', 'user.name', 'Minions Bot'], {
+        cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      try {
+        execFileSync('git', ['merge', 'origin/main', '--no-edit'], {
+          cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+        })
+        await logger.event('text', 'Merged main into PR branch successfully')
+      } catch {
+        // Merge conflicts — abort and let CLI resolve them
+        execFileSync('git', ['merge', '--abort'], {
+          cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+        })
+        await logger.event('text', 'Merge conflicts detected — CLI will resolve them')
+      }
+    } catch {
+      await logger.event('text', 'Could not fetch main — proceeding without merge')
+    }
 
     // Write headless CLAUDE.md
     const claudeMdPath = join(workDir, 'CLAUDE.md')
@@ -416,7 +459,21 @@ export async function runFixBuildJob(input: FixBuildInput): Promise<{
       .map(c => `- [${c.severity}] ${c.file}${c.line ? `:${c.line}` : ''}: ${c.comment}`)
       .join('\n')
 
-    const prompt = `You are fixing code review issues on PR #${prNumber}.
+    const prompt = isConflictFix
+      ? `You are resolving merge conflicts on PR #${prNumber}.
+
+The PR branch has diverged from main. You need to:
+1. Run \`git fetch origin main\` and \`git merge origin/main\` to bring in the latest changes
+2. If there are merge conflicts, resolve them — keep BOTH the PR's new features AND main's changes
+3. Make sure the merged code compiles, builds, and tests pass
+4. Commit the merge resolution
+
+## Rules
+- Preserve ALL functionality from both branches
+- Do NOT delete features from either branch
+- Ensure imports, routes, and component references are correct after merge
+- Run the build to verify everything works`
+      : `You are fixing code review issues on PR #${prNumber}.
 
 ## Review Summary
 ${reviewSummary}
@@ -461,6 +518,18 @@ ${concernsList || 'No specific concerns listed — address the summary above.'}
     })
 
     const headSha = getHeadSha(workDir)
+
+    // Refresh token before push — installation tokens expire after 1 hour
+    if (project.github_installation_id) {
+      const { getInstallationToken: refreshToken, isGitHubAppConfigured: isAppConfigured } = await import('./github-app.js')
+      if (isAppConfigured()) {
+        const freshToken = await refreshToken(project.github_installation_id)
+        execFileSync('git', ['remote', 'set-url', 'origin',
+          `https://x-access-token:${freshToken}@github.com/${project.github_repo}.git`],
+          { cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+      }
+    }
+
     await logger.event('text', `Pushing fix to ${branchName} (SHA: ${headSha.slice(0, 7)})...`)
     execFileSync('git', ['push', 'origin', branchName], {
       cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
