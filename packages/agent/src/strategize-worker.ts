@@ -101,8 +101,10 @@ export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
       role: 'user',
       content: `You are a product strategist for "${project.name}" (${project.github_repo || 'no repo'}).
 
-${project.product_context ? `Product vision: ${project.product_context}\n` : ''}
-## Current findings from code analysis (sorted by severity)
+${project.product_context ? `## Product Vision (THIS IS YOUR PRIMARY GUIDE)\n${project.product_context}\n` : ''}
+${nudgesContext ? `## Owner Directives (MUST FOLLOW — these override findings)\n${nudgesContext}\n` : ''}
+${ideasContext ? `## User-submitted ideas to consider\n${ideasContext}\n` : ''}
+## Current findings from code analysis (for reference — use these as inspiration, not as your primary driver)
 ${findingsSummary}
 
 ## Existing proposals (avoid duplicates)
@@ -110,12 +112,11 @@ ${existingProposals}
 
 ## Strategy memory (past decisions — learn from rejections)
 ${memoryContext}
-${nudgesContext ? `\n## Strategic directives from the product owner (HIGH PRIORITY — follow these)\n${nudgesContext}\n` : ''}
-${ideasContext ? `\n## User-submitted ideas to consider\n${ideasContext}\n` : ''}
-Based on the findings and context above, identify ${isWildCard ? '1' : `1-${MAX_PROPOSALS_PER_RUN}`} concrete improvement proposals. For each:
-- Prioritize critical and high-severity findings
-- Group related findings into a single coherent proposal when possible
-- If no findings exist yet, derive proposals from the product vision, strategic directives, and user ideas
+
+Based on the above, identify ${isWildCard ? '1' : `1-${MAX_PROPOSALS_PER_RUN}`} concrete improvement proposals. For each:
+- The product vision and owner directives are your TOP priority — propose what THEY ask for
+- Use findings as supporting context, not as the main source of proposals
+- If the owner says "create features" then propose features, NOT refactors or test suites
 - Do NOT re-propose anything that was recently rejected
 - Do NOT propose what already exists in existing proposals
 - Be specific and actionable (not vague like "improve UX")${wildCardInstructions}

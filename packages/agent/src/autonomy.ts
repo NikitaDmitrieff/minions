@@ -5,6 +5,19 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Supabase = SupabaseClient<any, any, any>
 
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL ?? ''
+
+async function notifySlack(message: string): Promise<void> {
+  if (!SLACK_WEBHOOK_URL) return
+  try {
+    await fetch(SLACK_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: message }),
+    })
+  } catch { /* don't break pipeline for Slack */ }
+}
+
 /** Fetch a GitHub token for the project (installation token or PAT fallback). */
 async function getProjectToken(supabase: Supabase, projectId: string): Promise<{ token: string; repo: string }> {
   const { data: project } = await supabase
@@ -99,9 +112,9 @@ export async function autoApproveAndTriggerBuilds(
 
   const riskPaths: string[] = (project.risk_paths as string[]) ?? []
 
+  // Pick the single best proposal
+  let chosen: typeof sorted[0] | null = null
   for (const proposal of sorted) {
-    if (slotsAvailable <= 0) break
-
     // In assist mode, skip proposals that touch risk paths
     if (project.autonomy_mode === 'assist' && riskPaths.length > 0) {
       const specLower = (proposal.spec || '').toLowerCase()
@@ -111,68 +124,84 @@ export async function autoApproveAndTriggerBuilds(
         continue
       }
     }
-
-    const branchName = `proposals/${slugify(proposal.title)}`
-
-    // Update proposal to approved
-    await supabase.from('proposals')
-      .update({
-        status: 'approved',
-        branch_name: branchName,
-        reviewed_at: new Date().toISOString(),
-      })
-      .eq('id', proposal.id)
-
-    // Emit auto_approved branch event
-    await supabase.from('branch_events').insert({
-      project_id: projectId,
-      branch_name: branchName,
-      event_type: 'auto_approved',
-      event_data: {
-        proposal_id: proposal.id,
-        proposal_title: proposal.title,
-        autonomy_mode: project.autonomy_mode,
-      },
-      actor: 'autonomy',
-    })
-
-    // Record in strategy_memory
-    await supabase.from('strategy_memory').insert({
-      project_id: projectId,
-      proposal_id: proposal.id,
-      event_type: 'approved',
-      title: proposal.title,
-      themes: [],
-      outcome_notes: `Auto-approved in ${project.autonomy_mode} mode`,
-    })
-
-    // Create pipeline_run entry
-    const { data: pipelineRun } = await supabase.from('pipeline_runs').insert({
-      project_id: projectId,
-      github_issue_number: 0,
-      stage: 'queued',
-      triggered_by: 'autonomy',
-    }).select('id').single()
-
-    // Create build job in job_queue
-    await supabase.from('job_queue').insert({
-      project_id: projectId,
-      github_issue_number: 0,
-      issue_title: proposal.title,
-      issue_body: JSON.stringify({
-        proposal_id: proposal.id,
-        branch_name: branchName,
-        spec: proposal.spec,
-        title: proposal.title,
-        pipeline_run_id: pipelineRun?.id,
-      }),
-      job_type: 'build',
-      status: 'pending',
-    })
-
-    console.log(`[autonomy] Auto-approved and queued build: "${proposal.title}" → ${branchName}`)
-    slotsAvailable--
+    chosen = proposal
+    break
   }
+
+  if (!chosen) {
+    console.log('[autonomy] No eligible proposal found after filtering')
+    return
+  }
+
+  // Reject the rest
+  const rejected = sorted.filter(p => p.id !== chosen!.id)
+  for (const p of rejected) {
+    await supabase.from('proposals')
+      .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: `Not selected — "${chosen.title}" scored higher` })
+      .eq('id', p.id)
+    console.log(`[autonomy] Skipped "${p.title}" (score ${avgScore(p.scores).toFixed(2)}) in favor of top pick`)
+  }
+
+  const branchName = `proposals/${slugify(chosen.title)}`
+
+  // Update proposal to approved
+  await supabase.from('proposals')
+    .update({
+      status: 'approved',
+      branch_name: branchName,
+      reviewed_at: new Date().toISOString(),
+    })
+    .eq('id', chosen.id)
+
+  // Emit auto_approved branch event
+  await supabase.from('branch_events').insert({
+    project_id: projectId,
+    branch_name: branchName,
+    event_type: 'auto_approved',
+    event_data: {
+      proposal_id: chosen.id,
+      proposal_title: chosen.title,
+      autonomy_mode: project.autonomy_mode,
+      score: avgScore(chosen.scores),
+    },
+    actor: 'autonomy',
+  })
+
+  // Record in strategy_memory
+  await supabase.from('strategy_memory').insert({
+    project_id: projectId,
+    proposal_id: chosen.id,
+    event_type: 'approved',
+    title: chosen.title,
+    themes: [],
+    outcome_notes: `Auto-approved in ${project.autonomy_mode} mode (top pick from ${drafts.length} proposals, score ${avgScore(chosen.scores).toFixed(2)})`,
+  })
+
+  // Create pipeline_run entry
+  const { data: pipelineRun } = await supabase.from('pipeline_runs').insert({
+    project_id: projectId,
+    github_issue_number: 0,
+    stage: 'queued',
+    triggered_by: 'autonomy',
+  }).select('id').single()
+
+  // Create build job in job_queue
+  await supabase.from('job_queue').insert({
+    project_id: projectId,
+    github_issue_number: 0,
+    issue_title: chosen.title,
+    issue_body: JSON.stringify({
+      proposal_id: chosen.id,
+      branch_name: branchName,
+      spec: chosen.spec,
+      title: chosen.title,
+      pipeline_run_id: pipelineRun?.id,
+    }),
+    job_type: 'build',
+    status: 'pending',
+  })
+
+  console.log(`[autonomy] Auto-approved and queued build: "${chosen.title}" (score ${avgScore(chosen.scores).toFixed(2)}) → ${branchName}`)
 }
 
 /** Check if auto-merge should proceed. */
@@ -223,7 +252,7 @@ export async function autoMergePR(
     })
 
     if (pr.head.sha !== payload.head_sha) {
-      console.log(`[autonomy] HEAD SHA mismatch: expected ${payload.head_sha.slice(0, 7)}, got ${pr.head.sha.slice(0, 7)} — aborting merge`)
+      console.log(`[autonomy] HEAD SHA mismatch: expected ${payload.head_sha.slice(0, 7)}, got ${pr.head.sha.slice(0, 7)} — rejecting proposal`)
       await supabase.from('branch_events').insert({
         project_id: projectId,
         branch_name: payload.branch_name,
@@ -231,18 +260,43 @@ export async function autoMergePR(
         event_data: { reason: 'SHA mismatch', expected: payload.head_sha, actual: pr.head.sha },
         actor: 'autonomy',
       })
+      await supabase.from('proposals')
+        .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'HEAD SHA changed after review' })
+        .eq('id', payload.proposal_id)
+      await notifySlack(`Merge aborted PR #${payload.pr_number} — SHA changed after review`)
+      await checkCycleCompletion(supabase, projectId, payload.proposal_id)
       return
     }
 
-    // Squash merge
-    const { data: mergeResult } = await octokit.pulls.merge({
-      owner,
-      repo: repoName,
-      pull_number: payload.pr_number,
-      merge_method: 'squash',
-    })
+    // Squash merge — with conflict handling
+    let mergeResult: { sha: string }
+    try {
+      const { data } = await octokit.pulls.merge({
+        owner,
+        repo: repoName,
+        pull_number: payload.pr_number,
+        merge_method: 'squash',
+      })
+      mergeResult = data
+    } catch (mergeErr: unknown) {
+      const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr)
+      console.log(`[autonomy] Merge failed for PR #${payload.pr_number}: ${msg}`)
+      await supabase.from('branch_events').insert({
+        project_id: projectId,
+        branch_name: payload.branch_name,
+        event_type: 'merge_failed',
+        event_data: { reason: msg, pr_number: payload.pr_number },
+        actor: 'autonomy',
+      })
+      await supabase.from('proposals')
+        .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: `Merge failed: ${msg.slice(0, 200)}` })
+        .eq('id', payload.proposal_id)
+      await notifySlack(`Merge failed PR #${payload.pr_number}: ${msg.slice(0, 100)}`)
+      await checkCycleCompletion(supabase, projectId, payload.proposal_id)
+      return
+    }
 
-    const mergeSha = mergeResult.sha
+    const mergeSha = mergeResult.sha ?? 'unknown'
 
     // Mark proposal as done
     await supabase.from('proposals')
@@ -307,6 +361,7 @@ export async function autoMergePR(
     }
 
     console.log(`[autonomy] Auto-merged PR #${payload.pr_number} (${mergeSha.slice(0, 7)})`)
+    await notifySlack(`Merged PR #${payload.pr_number} into main (${mergeSha.slice(0, 7)})`)
 
     // Check if the cycle is now complete
     await checkCycleCompletion(supabase, projectId, payload.proposal_id)
@@ -424,6 +479,7 @@ export async function checkCycleCompletion(
       })
 
       console.log(`[autonomy] Re-triggered scout for next cycle`)
+      await notifySlack(`Cycle complete — all proposals resolved. Starting new scout cycle.`)
     } else {
       console.log(`[autonomy] Scout already pending/processing — skipping re-trigger`)
     }

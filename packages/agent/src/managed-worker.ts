@@ -9,15 +9,30 @@ import { runBuilderJob } from './builder-worker.js'
 import { runReviewerJob } from './reviewer-worker.js'
 import { getInstallationToken, getInstallationFirstRepo, isGitHubAppConfigured } from './github-app.js'
 import { initCredentials, ensureValidToken } from './oauth.js'
-import { autoApproveAndTriggerBuilds, shouldAutoMerge, autoMergePR } from './autonomy.js'
+import { autoApproveAndTriggerBuilds, shouldAutoMerge, autoMergePR, checkCycleCompletion } from './autonomy.js'
 type Supabase = ReturnType<typeof createSupabaseClient>
 
 const POLL_INTERVAL_MS = 5_000
 const PAUSE_POLL_MS = 30_000
-const STALE_THRESHOLD_MINUTES = 30
+const STALE_THRESHOLD_MINUTES = 60
 const MAX_ATTEMPTS = 3
 const MAX_BACKOFF_MS = 60_000
 const WORKER_ID = `worker-${process.pid}-${Date.now()}`
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL ?? ''
+
+/** Fire-and-forget Slack notification for pipeline events. */
+async function notifySlack(message: string): Promise<void> {
+  if (!SLACK_WEBHOOK_URL) return
+  try {
+    await fetch(SLACK_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: message }),
+    })
+  } catch {
+    // Don't let Slack failures break the pipeline
+  }
+}
 
 async function reapStaleJobs(supabase: Supabase) {
   const cutoff = new Date(Date.now() - STALE_THRESHOLD_MINUTES * 60_000).toISOString()
@@ -333,6 +348,7 @@ async function processJob(supabase: Supabase, job: {
       })
       // Auto-approve proposals after strategize completes
       await autoApproveAndTriggerBuilds(supabase, job.project_id, strategizeCycleId)
+      await notifySlack(`Strategize complete — proposals auto-approved and queued for build`)
     } else if (job.job_type === 'scout') {
       await runScoutJob({
         jobId: job.id,
@@ -344,6 +360,7 @@ async function processJob(supabase: Supabase, job: {
       // Note: source_run_id has FK to pipeline_runs, so we pass cycle_id through issue_body instead
       const cycleId = job.id
       console.log(`[${WORKER_ID}] Scout complete, auto-triggering strategize for project ${job.project_id} (cycle ${cycleId.slice(0, 8)})`)
+      await notifySlack(`Scout complete — triggering strategize (cycle ${cycleId.slice(0, 8)})`)
       await supabase.from('job_queue').insert({
         project_id: job.project_id,
         github_issue_number: 0,
@@ -375,6 +392,8 @@ async function processJob(supabase: Supabase, job: {
         },
         actor: 'builder',
       })
+
+      await notifySlack(`Build started: "${payload.title || job.issue_title}" → branch ${payload.branch_name}`)
 
       const result = await runBuilderJob({
         jobId: job.id,
@@ -409,6 +428,21 @@ async function processJob(supabase: Supabase, job: {
           job_type: 'review',
           status: 'pending',
         })
+      } else {
+        // Builder produced no changes — reject proposal and move on
+        console.log(`[${WORKER_ID}] Build produced no changes — rejecting proposal ${payload.proposal_id}`)
+        await notifySlack(`Build produced no changes for "${payload.title || job.issue_title}" — proposal rejected`)
+
+        await supabase.from('proposals')
+          .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Builder produced no code changes' })
+          .eq('id', payload.proposal_id)
+
+        await supabase.from('pipeline_runs')
+          .update({ stage: 'failed', completed_at: new Date().toISOString(), result: 'failure' })
+          .eq('id', buildRunId)
+
+        // Trigger cycle completion check so pipeline doesn't stall
+        await checkCycleCompletion(supabase, job.project_id, payload.proposal_id!)
       }
     } else if (job.job_type === 'review') {
       // Reviewer job: AI code review of a PR
@@ -446,6 +480,7 @@ async function processJob(supabase: Supabase, job: {
         // Try auto-merge if in automate mode
         if (await shouldAutoMerge(supabase, job.project_id)) {
           console.log(`[${WORKER_ID}] Review approved — attempting auto-merge for PR #${payload.pr_number}`)
+          await notifySlack(`Review approved — auto-merging PR #${payload.pr_number}`)
           await autoMergePR(supabase, job.project_id, {
             proposal_id: payload.proposal_id!,
             pr_number: payload.pr_number!,
@@ -477,6 +512,7 @@ async function processJob(supabase: Supabase, job: {
       } else {
         // Reviewer requested changes or rejected
         console.log(`[${WORKER_ID}] Review rejected — proposal ${payload.proposal_id}`)
+        await notifySlack(`Review rejected PR #${payload.pr_number} — reviewer requested changes`)
         await supabase.from('proposals')
           .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Reviewer requested changes' })
           .eq('id', payload.proposal_id)
@@ -488,6 +524,9 @@ async function processJob(supabase: Supabase, job: {
           event_data: { proposal_id: payload.proposal_id, pr_number: payload.pr_number },
           actor: 'reviewer',
         })
+
+        // Check if all proposals in cycle are resolved — triggers next scout
+        await checkCycleCompletion(supabase, job.project_id, payload.proposal_id!)
       }
     } else {
       // Default: implement job (existing flow)

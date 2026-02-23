@@ -24,7 +24,7 @@ const RISK_TIERS: Array<{ tier: 'critical' | 'high' | 'medium' | 'low'; patterns
     patterns: [
       '**/.env*', '**/secrets*', '**/*credentials*', '**/*secret*',
       '**/Dockerfile*', '**/docker-compose*',
-      '**/.github/workflows/**', '**/package.json', '**/package-lock.json',
+      '**/.github/workflows/**',
     ],
   },
   {
@@ -32,6 +32,7 @@ const RISK_TIERS: Array<{ tier: 'critical' | 'high' | 'medium' | 'low'; patterns
     patterns: [
       '**/migrations/**', '**/schema*', '**/middleware*',
       '**/auth/**', '**/api/**', '**/server/**',
+      '**/package.json', '**/package-lock.json',
     ],
   },
   {
@@ -141,6 +142,10 @@ export async function runReviewerJob(input: ReviewerInput): Promise<{
     const criticalFiles = riskSummary.critical.map((f) => f.filename).join(', ')
     await logger.event('text', `Critical files modified: ${criticalFiles}`)
   }
+  if (riskSummary.high.length > 0) {
+    const highFiles = riskSummary.high.map((f) => f.filename).join(', ')
+    await logger.event('text', `High-risk files modified: ${highFiles}`)
+  }
 
   // 3. Fetch proposal spec for context
   const { data: proposal } = await supabase
@@ -171,15 +176,15 @@ export async function runReviewerJob(input: ReviewerInput): Promise<{
   // 6. Call Anthropic for review
   const anthropic = getAnthropicClient()
 
-  const reviewPrompt = `You are a code reviewer for a software project. Review this pull request diff.
+  const reviewPrompt = `You are a pragmatic code reviewer. Your job is to catch real problems, not nitpick.
 
 ## Proposal Context
 Title: ${proposal?.title ?? 'Unknown'}
 Spec: ${proposal?.spec?.slice(0, 2000) ?? 'No spec'}
 
 ## Risk Tier Summary
-- Critical files (env, secrets, CI, package.json): ${riskSummary.critical.map((f) => f.filename).join(', ') || 'none'}
-- High-risk files (migrations, auth, API): ${riskSummary.high.map((f) => f.filename).join(', ') || 'none'}
+- Critical files (env, secrets, CI): ${riskSummary.critical.map((f) => f.filename).join(', ') || 'none'}
+- High-risk files (migrations, auth, API, package.json): ${riskSummary.high.map((f) => f.filename).join(', ') || 'none'}
 - Medium-risk files (source code): ${riskSummary.medium.length} files
 - Low-risk files (docs, styles): ${riskSummary.low.length} files
 
@@ -187,11 +192,19 @@ Spec: ${proposal?.spec?.slice(0, 2000) ?? 'No spec'}
 ${diffSections.slice(0, 30000)}
 ${revertContext ? `\n## Past Rejected Changes (avoid similar patterns)\n${revertContext}\n` : ''}
 ## Review Instructions
-1. Check that changes match the proposal spec — flag scope creep
-2. Flag any security concerns (especially in critical/high-risk files)
-3. Check for obvious bugs, missing error handling, or broken types
-4. Verify no secrets, credentials, or API keys are exposed in the diff
-5. If critical files (env, Dockerfile, CI workflows, package.json) are modified, explain WHY and whether it's justified
+
+ONLY request_changes for these reasons:
+- Security vulnerabilities: secrets exposed, SQL injection, XSS, etc.
+- Code that will crash at runtime: undefined references, missing imports that are used, broken logic
+- Fundamentally wrong approach: e.g. testing Server Components with jsdom (won't work)
+
+APPROVE with comments for everything else, including:
+- Minor scope additions (ESLint config, version pinning, extra tooling) — these are fine
+- Style preferences, naming conventions, unused imports
+- Missing tests or docs
+- Package.json dependency changes — these are normal and expected
+
+Be generous. The builder is an AI agent doing its best. Approve if the code works and roughly matches the spec. Don't reject for polish issues.
 
 Respond in JSON:
 \`\`\`json

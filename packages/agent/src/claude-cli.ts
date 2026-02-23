@@ -52,7 +52,7 @@ export async function claudeEnv(restricted = false): Promise<NodeJS.ProcessEnv> 
   }
 
   if (restricted) {
-    // Builder sandbox: minimal env
+    // Builder sandbox: minimal env, keep HOME so user skills/plugins load
     return {
       HOME: process.env.HOME,
       PATH: process.env.PATH,
@@ -74,19 +74,23 @@ export async function claudeEnv(restricted = false): Promise<NodeJS.ProcessEnv> 
 export function summarizeToolInput(tool: string, input: Record<string, unknown>): string {
   switch (tool) {
     case 'Read':
-      return `Reading ${input.file_path ?? 'file'}`
+      return `\u{1F4D6} Read ${input.file_path ?? 'file'}`
     case 'Edit':
-      return `Editing ${input.file_path ?? 'file'}`
+      return `\u270F\uFE0F  Edit ${input.file_path ?? 'file'}`
     case 'Write':
-      return `Creating ${input.file_path ?? 'file'}`
+      return `\u{1F4DD} Write ${input.file_path ?? 'file'}`
     case 'Bash':
-      return `Running: ${String(input.command ?? '').slice(0, 120)}`
+      return `\u{1F4BB} ${String(input.command ?? '').slice(0, 120)}`
     case 'Glob':
-      return `Searching files: ${input.pattern ?? ''}`
+      return `\u{1F50D} Glob ${input.pattern ?? ''}`
     case 'Grep':
-      return `Searching for: ${input.pattern ?? ''}`
+      return `\u{1F50E} Grep ${input.pattern ?? ''}`
+    case 'Task':
+      return `\u{1F916} Subagent`
+    case 'TodoWrite':
+      return `\u2705 Todo update`
     default:
-      return `Using tool: ${tool}`
+      return `\u{1F527} ${tool}`
   }
 }
 
@@ -105,7 +109,7 @@ export interface RunClaudeOptions {
 export async function runClaude(opts: RunClaudeOptions): Promise<void> {
   const { prompt, workDir, timeoutMs, logger, logPrefix = 'claude', restrictedEnv = false } = opts
   const env = await claudeEnv(restrictedEnv)
-  const args = ['--dangerously-skip-permissions', '--verbose', '--model', 'claude-sonnet-4-6', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
+  const args = ['--dangerously-skip-permissions', '--permission-mode', 'dontAsk', '--verbose', '--model', 'claude-sonnet-4-6', '--output-format', 'stream-json', '--include-partial-messages', '-p', prompt]
 
   console.log(`[${logPrefix}] Running Claude Code CLI (stream-json, auth=oauth)...`)
   await logger?.event('text', `Starting Claude CLI (auth=oauth, cwd=${workDir}, prompt=${prompt.length} chars)`)
@@ -150,9 +154,13 @@ export async function runClaude(opts: RunClaudeOptions): Promise<void> {
     proc.stdout.on('data', (chunk: Buffer) => {
       stdoutBytes += chunk.length
     })
+    let lastMonitorBytes = 0
     const monitor = setInterval(() => {
-      console.log(`[${logPrefix}] [monitor] stdout=${stdoutBytes} bytes, stderr=${stderr.length} bytes, pid=${proc.pid}`)
-    }, 5000)
+      // Only log if new output was produced (skip silent polls)
+      if (stdoutBytes !== lastMonitorBytes) {
+        lastMonitorBytes = stdoutBytes
+      }
+    }, 60000)
 
     const rl = createInterface({ input: proc.stdout })
     rl.on('line', (line) => {
@@ -174,11 +182,13 @@ export async function runClaude(opts: RunClaudeOptions): Promise<void> {
               logger?.event('tool_use', summary, { tool: block.name, input: block.input })
             } else if (block.type === 'text' && block.text?.trim()) {
               const preview = block.text.trim().slice(0, 200)
-              console.log(`[${logPrefix}] [claude] ${preview}`)
+              console.log(`[${logPrefix}] \u{1F4AC} ${preview}`)
               logger?.event('text', `[claude] ${preview}`)
             }
           }
-        } else if (evt.type && evt.type !== 'stream_event') {
+        } else if (evt.type === 'rate_limit_event') {
+          console.log(`[${logPrefix}] \u23F3 Rate limited — waiting`)
+        } else if (evt.type && !['stream_event', 'user', 'system'].includes(evt.type)) {
           console.log(`[${logPrefix}] [event] ${evt.type}`)
         }
       } catch {

@@ -10,8 +10,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Supabase = SupabaseClient<any, any, any>
 
-const STEP_TIMEOUT_MS = 5 * 60 * 1000
-const CLAUDE_TIMEOUT_MS = 15 * 60 * 1000
+const STEP_TIMEOUT_MS = 10 * 60 * 1000
+const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000
 const MAX_REMEDIATION_ATTEMPTS = 2
 
 export interface BuilderInput {
@@ -159,6 +159,8 @@ ${spec}
 - Do NOT add features beyond the spec
 - Make the minimal changes needed
 - Ensure all new code has proper types
+- NEVER create or modify files in .github/workflows/ — you don't have permission to push those
+- NEVER modify .env files or add secrets
 - Run the build to verify your changes compile before finishing`
 
     await logger.event('text', `Running Claude CLI (spec: ${spec.length} chars)...`)
