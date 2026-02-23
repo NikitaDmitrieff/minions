@@ -99,37 +99,53 @@ export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
     max_tokens: 2000,
     messages: [{
       role: 'user',
-      content: `You are a product strategist for "${project.name}" (${project.github_repo || 'no repo'}).
+      content: `You are an INNOVATIVE product visionary for "${project.name}" (${project.github_repo || 'no repo'}).
 
-${project.product_context ? `## Product Vision (THIS IS YOUR PRIMARY GUIDE)\n${project.product_context}\n` : ''}
-${nudgesContext ? `## Owner Directives (MUST FOLLOW — these override findings)\n${nudgesContext}\n` : ''}
-${ideasContext ? `## User-submitted ideas to consider\n${ideasContext}\n` : ''}
-## Current findings from code analysis (for reference — use these as inspiration, not as your primary driver)
+Your job is to propose features that make people go "wow, an AI built THIS?" You are NOT a code auditor. You are a creative builder who ships surprising, delightful, FUNCTIONAL features.
+
+${project.product_context ? `## Product Vision (YOUR PRIMARY GUIDE — follow this closely)\n${project.product_context}\n` : ''}
+${nudgesContext ? `## Owner Directives (MUST FOLLOW)\n${nudgesContext}\n` : ''}
+${ideasContext ? `## User-submitted ideas (incorporate these!)\n${ideasContext}\n` : ''}
+## What already exists in the codebase (build on top of this, don't rebuild it)
 ${findingsSummary}
 
-## Existing proposals (avoid duplicates)
+## Already proposed or built (DO NOT duplicate)
 ${existingProposals}
 
-## Strategy memory (past decisions — learn from rejections)
+## Past decisions (learn from what was rejected or approved)
 ${memoryContext}
 
-Based on the above, identify ${isWildCard ? '1' : `1-${MAX_PROPOSALS_PER_RUN}`} concrete improvement proposals. For each:
-- The product vision and owner directives are your TOP priority — propose what THEY ask for
-- Use findings as supporting context, not as the main source of proposals
-- If the owner says "create features" then propose features, NOT refactors or test suites
-- Do NOT re-propose anything that was recently rejected
-- Do NOT propose what already exists in existing proposals
-- Be specific and actionable (not vague like "improve UX")${wildCardInstructions}
+Propose ${isWildCard ? '1 AMBITIOUS' : `1-${MAX_PROPOSALS_PER_RUN}`} NEW feature${isWildCard ? '' : 's'} to build. Think like a creative developer who wants to ship something impressive:
+
+GOOD proposals — innovative, functional, surprising:
+- "Build a real-time collaborative mood board with drag-and-drop"
+- "Add an AI-powered color palette generator that creates themes from uploaded images"
+- "Create an interactive 3D component playground with physics-based animations"
+- "Build a generative art landing page that creates unique visuals per visitor"
+
+BAD proposals — boring, safe, audit-focused:
+- "Add accessibility audit dashboard" (auditing, not building)
+- "Improve design token documentation" (docs, not features)
+- "Create test suite for components" (testing, not creating)
+- "Refactor CSS to use design tokens" (refactoring, not innovating)
+
+Rules:
+- Propose FEATURES that users can interact with, not audits/tests/refactors
+- Each proposal must result in something VISIBLE and IMPRESSIVE
+- The feature should build on what exists but take the product in a bold new direction
+- Be specific: what exactly gets built, what does it look like, how does it work
+- Do NOT re-propose anything from the "already proposed" list
+- Spec must be detailed enough for a coding agent to implement in one PR${wildCardInstructions}
 
 Respond in JSON format:
 \`\`\`json
 [
   {
-    "title": "Short imperative title (e.g., Fix SQL injection in auth endpoints)",
-    "rationale": "Why this matters — cite specific findings by title and severity",
-    "spec": "Detailed implementation spec: what to build, where in the codebase, acceptance criteria. Enough detail for a coding agent to implement.",
+    "title": "Short imperative title (e.g., Build a generative art landing page)",
+    "rationale": "Why this is exciting and what it adds to the product",
+    "spec": "Detailed implementation spec: exact components to create, layout, interactions, animations, data flow. Be specific and creative.",
     "priority": "high|medium|low",
-    "source_finding_titles": ["Finding title 1", "Finding title 2"]
+    "source_finding_titles": []
   }
 ]
 \`\`\`
@@ -165,18 +181,16 @@ Only return the JSON array. No other text.`,
       max_tokens: 500,
       messages: [{
         role: 'user',
-        content: `Score this product improvement proposal on 4 dimensions (0.0 to 1.0):
+        content: `Score this feature proposal on 4 dimensions (0.0 to 1.0):
 
 Title: ${raw.title}
 Rationale: ${raw.rationale}
 Spec: ${raw.spec}
 
-Findings data: ${findingsSummary}
-
 Score each dimension:
-- impact: How severe are the findings this addresses? (critical/high = more impact)
-- feasibility: Can a coding agent implement this in one PR? (based on spec complexity)
-- novelty: Is this genuinely new? (not already built or proposed)
+- impact: How impressive and useful is this feature? Would it make someone say "wow"? (innovative/delightful = high, boring/incremental = low)
+- feasibility: Can a coding agent implement this in one PR? (clear spec + reasonable scope = high, vague or massive = low)
+- novelty: Is this genuinely new and creative? (never seen before = high, common pattern = medium, already exists = low)
 - alignment: Does this match the product vision?${project.product_context ? ` Vision: ${project.product_context}` : ''}
 
 Respond in JSON only:
