@@ -310,3 +310,144 @@ ${validationResult.errorOutput.slice(-4000)}`
     if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true })
   }
 }
+
+export interface FixBuildInput {
+  jobId: string
+  projectId: string
+  proposalId: string
+  prNumber: number
+  branchName: string
+  reviewSummary: string
+  reviewConcerns: Array<{ file: string; line?: number; severity: string; comment: string }>
+  supabase: Supabase
+}
+
+export async function runFixBuildJob(input: FixBuildInput): Promise<{
+  headSha: string | null
+}> {
+  const { jobId, projectId, proposalId, prNumber, branchName, reviewSummary, reviewConcerns, supabase } = input
+  const workDir = `/tmp/fixbuild-${jobId.slice(0, 8)}`
+  const logger = new DbLogger(supabase, jobId)
+
+  // Fetch GitHub config (reuse same pattern as runBuilderJob)
+  const { data: project } = await supabase
+    .from('projects')
+    .select('github_repo, github_installation_id')
+    .eq('id', projectId)
+    .single()
+
+  if (!project?.github_repo) throw new Error(`Project ${projectId} has no github_repo`)
+
+  let token: string
+  if (project.github_installation_id) {
+    const { getInstallationToken, isGitHubAppConfigured } = await import('./github-app.js')
+    if (isGitHubAppConfigured()) {
+      token = await getInstallationToken(project.github_installation_id)
+    } else {
+      token = process.env.GITHUB_TOKEN ?? ''
+    }
+  } else {
+    token = process.env.GITHUB_TOKEN ?? ''
+  }
+  if (!token) throw new Error('No GitHub token available for fix-build job')
+
+  validateRef(branchName)
+
+  try {
+    // 1. Clone the PR branch directly
+    await logger.event('text', `Cloning ${project.github_repo} (branch: ${branchName}) for fix-build...`)
+    if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true })
+
+    execFileSync('git', [
+      'clone', '--depth=10', '-b', branchName,
+      '-c', 'core.hooksPath=/dev/null',
+      `https://x-access-token:${token}@github.com/${project.github_repo}.git`, workDir,
+    ], { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+
+    // Write headless CLAUDE.md
+    const claudeMdPath = join(workDir, 'CLAUDE.md')
+    writeFileSync(claudeMdPath, `# Fix-Build Agent Instructions
+
+## CRITICAL: HEADLESS mode. NO human interaction.
+
+- NEVER use brainstorming skill
+- NEVER call AskUserQuestion
+- NEVER use EnterPlanMode
+- Fix ONLY the issues identified in the review feedback
+- Do NOT refactor unrelated code
+- Do NOT add new features
+- Make minimal, targeted fixes
+`)
+
+    await logger.event('text', 'Installing dependencies...')
+    run('npm ci', workDir)
+
+    // 2. Run Claude CLI with fix prompt
+    const concernsList = reviewConcerns
+      .map(c => `- [${c.severity}] ${c.file}${c.line ? `:${c.line}` : ''}: ${c.comment}`)
+      .join('\n')
+
+    const prompt = `You are fixing code review issues on PR #${prNumber}.
+
+## Review Summary
+${reviewSummary}
+
+## Specific Concerns to Fix
+${concernsList || 'No specific concerns listed — address the summary above.'}
+
+## Rules
+- Fix ONLY the issues mentioned above
+- Do NOT refactor unrelated code
+- Do NOT add features beyond what's needed to fix the concerns
+- Make minimal, targeted changes
+- Ensure the code compiles and tests pass after your changes`
+
+    await logger.event('text', `Running Claude CLI for fix-build (${reviewConcerns.length} concerns)...`)
+    await runClaude({
+      prompt,
+      workDir,
+      timeoutMs: CLAUDE_TIMEOUT_MS / 2,
+      logger,
+      logPrefix: `fixbuild-${proposalId.slice(0, 8)}`,
+      restrictedEnv: true,
+    })
+
+    // 3. Validate
+    const validationResult = validate(workDir, logger)
+    if (!validationResult.success) {
+      await logger.event('error', `Fix-build validation failed at ${validationResult.stage}`)
+      return { headSha: null }
+    }
+
+    // 4. Commit and push
+    run('git add -A', workDir)
+    const diff = run('git diff --cached --stat', workDir).trim()
+    if (!diff) {
+      await logger.event('text', 'Fix-build: no changes made')
+      return { headSha: null }
+    }
+
+    execFileSync('git', ['commit', '-m', `fix: address review feedback on PR #${prNumber}`], {
+      cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    const headSha = getHeadSha(workDir)
+    await logger.event('text', `Pushing fix to ${branchName} (SHA: ${headSha.slice(0, 7)})...`)
+    execFileSync('git', ['push', 'origin', branchName], {
+      cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    await logger.event('text', `Fix-build complete — pushed to PR #${prNumber}`)
+    await supabase.from('branch_events').insert({
+      project_id: projectId,
+      branch_name: branchName,
+      event_type: 'build_completed',
+      event_data: { proposal_id: proposalId, pr_number: prNumber, head_sha: headSha, is_fix: true },
+      actor: 'builder',
+    })
+
+    return { headSha }
+  } finally {
+    if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true })
+  }
+}

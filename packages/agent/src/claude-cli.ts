@@ -4,7 +4,7 @@
  *
  * IMPORTANT: Claude CLI MUST use OAuth (Max subscription) only.
  * ANTHROPIC_API_KEY is NEVER passed to the CLI — it is reserved for
- * direct Anthropic SDK calls (Haiku classification, strategize, review).
+ * direct Anthropic SDK calls (Haiku classification, proposal scoring, review).
  * If OAuth is not configured or fails, the CLI job must fail loudly.
  */
 import { spawn } from 'node:child_process'

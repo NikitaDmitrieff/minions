@@ -1,4 +1,9 @@
+import { execFileSync } from 'node:child_process'
+import { existsSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
+import { runClaude } from './claude-cli.js'
+import { DbLogger } from './logger.js'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -13,18 +18,22 @@ export interface StrategizeInput {
 
 const MAX_PROPOSALS_PER_RUN = 3
 const MIN_SCORE_THRESHOLD = 0.6
+const STEP_TIMEOUT_MS = 10 * 60 * 1000
+const CLAUDE_TIMEOUT_MS = 45 * 60 * 1000
 
 function getAnthropicClient(): Anthropic {
   if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY is required for strategize jobs (OAuth tokens are not supported for direct API calls)')
+    throw new Error('ANTHROPIC_API_KEY is required for strategize scoring (direct API calls)')
   }
   return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 }
 
 export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
-  const { projectId, supabase } = input
+  const { jobId, projectId, supabase } = input
+  const workDir = `/tmp/strategist-${jobId.slice(0, 8)}`
+  const logger = new DbLogger(supabase, jobId)
 
-  // 1. Gather context — findings replace feedback themes/sessions
+  // 1. Gather context — findings, proposals, memory, ideas
   const [
     { data: project },
     { data: findings },
@@ -32,7 +41,7 @@ export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
     { data: memory },
     { data: pendingIdeas },
   ] = await Promise.all([
-    supabase.from('projects').select('name, github_repo, product_context, strategic_nudges, wild_card_frequency').eq('id', projectId).single(),
+    supabase.from('projects').select('name, github_repo, github_installation_id, product_context, strategic_nudges, wild_card_frequency').eq('id', projectId).single(),
     supabase.from('findings').select('id, category, severity, title, description, file_path').eq('project_id', projectId).eq('status', 'open').order('severity', { ascending: true }).limit(30),
     supabase.from('proposals').select('title, status, reject_reason').eq('project_id', projectId).order('created_at', { ascending: false }).limit(20),
     supabase.from('strategy_memory').select('title, event_type, themes, outcome_notes').eq('project_id', projectId).order('created_at', { ascending: false }).limit(30),
@@ -52,15 +61,19 @@ export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
     return
   }
 
-  // 2. Build context for Claude
+  // 2. Build context for prompt
   const severityOrder = ['critical', 'high', 'medium', 'low']
-  const sortedFindings = (findings ?? []).sort((a, b) =>
-    severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity)
-  )
 
-  const findingsSummary = sortedFindings.length > 0
-    ? sortedFindings
-      .map(f => `- [${f.severity}/${f.category}] ${f.title}: ${f.description}${f.file_path ? ` (${f.file_path})` : ''}`)
+  const findingCounts = (findings ?? []).reduce((acc, f) => {
+    const key = `${f.severity}/${f.category}`
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {} as Record<string, number>)
+
+  const findingsSummary = Object.keys(findingCounts).length > 0
+    ? Object.entries(findingCounts)
+      .sort(([a], [b]) => severityOrder.indexOf(a.split('/')[0]) - severityOrder.indexOf(b.split('/')[0]))
+      .map(([key, count]) => `- ${count}x ${key}`)
       .join('\n')
     : 'No findings yet'
 
@@ -80,8 +93,6 @@ export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
     .map(i => `- ${i.text}`)
     .join('\n') || ''
 
-  const anthropic = getAnthropicClient()
-
   // 2.5. Wild card mode check
   const wildCardFrequency = (project as Record<string, unknown>).wild_card_frequency as number ?? 0.2
   const isWildCard = Math.random() < wildCardFrequency
@@ -89,24 +100,71 @@ export async function runStrategizeJob(input: StrategizeInput): Promise<void> {
     console.log('[strategize] Wild card cycle — requesting ambitious proposal')
   }
 
-  // 3. Generate proposals from findings
   const wildCardInstructions = isWildCard
     ? `\n\nIMPORTANT: This is a WILD CARD cycle. Instead of incremental fixes, propose ONE ambitious architectural change or innovative feature. Think big — something that would meaningfully improve the codebase or product even if it's more complex to implement. Be bold.`
     : ''
 
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 2000,
-    messages: [{
-      role: 'user',
-      content: `You are an INNOVATIVE product visionary for "${project.name}" (${project.github_repo || 'no repo'}).
+  // 3. Clone repo and run CLI strategist
+  let token: string
+  if (project.github_installation_id) {
+    const { getInstallationToken, isGitHubAppConfigured } = await import('./github-app.js')
+    if (isGitHubAppConfigured()) {
+      token = await getInstallationToken(project.github_installation_id)
+    } else {
+      token = process.env.GITHUB_TOKEN ?? ''
+    }
+  } else {
+    token = process.env.GITHUB_TOKEN ?? ''
+  }
 
-Your job is to propose features that make people go "wow, an AI built THIS?" You are NOT a code auditor. You are a creative builder who ships surprising, delightful, FUNCTIONAL features.
+  if (!token || !project.github_repo) {
+    throw new Error(`No GitHub token or repo for project ${projectId}`)
+  }
+
+  let rawProposals: Array<{
+    title: string; rationale: string; spec: string; priority: string
+  }> = []
+
+  try {
+    await logger.event('text', `Cloning ${project.github_repo} for strategist...`)
+    if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true })
+
+    execFileSync('git', [
+      'clone', '--depth=1', '-c', 'core.hooksPath=/dev/null',
+      `https://x-access-token:${token}@github.com/${project.github_repo}.git`, workDir,
+    ], { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
+
+    // Write headless CLAUDE.md
+    writeFileSync(join(workDir, 'CLAUDE.md'), `# Strategist Agent Instructions
+
+## CRITICAL: HEADLESS mode. NO human interaction.
+
+- NEVER use brainstorming skill
+- NEVER call AskUserQuestion
+- NEVER use EnterPlanMode
+- You are a product strategist exploring this codebase to propose innovative features
+- Explore the codebase to understand the architecture, patterns, and what exists
+- Search the web for current trends, popular libraries, and innovative patterns
+- Write your proposals to proposals.json in the project root
+- Focus on FEATURES, not audits/refactors/tests
+`)
+
+    const prompt = `You are an INNOVATIVE product visionary for "${project.name}" (${project.github_repo}).
+
+Your job is to explore this codebase, understand what it does, search the web for cutting-edge trends and patterns in this product's domain, and then propose features that make people go "wow, an AI built THIS?"
+
+You are NOT a code auditor. You are a creative builder who ships surprising, delightful, FUNCTIONAL features.
+
+## Your Process
+1. Explore the codebase — read key files, understand the architecture, see what's already built
+2. Search the web for innovative trends, popular libraries, and creative patterns relevant to this product
+3. Synthesize what you've learned to propose bold, creative features
+4. Write your proposals to proposals.json in the project root
 
 ${project.product_context ? `## Product Vision (YOUR PRIMARY GUIDE — follow this closely)\n${project.product_context}\n` : ''}
 ${nudgesContext ? `## Owner Directives (MUST FOLLOW)\n${nudgesContext}\n` : ''}
 ${ideasContext ? `## User-submitted ideas (incorporate these!)\n${ideasContext}\n` : ''}
-## What already exists in the codebase (build on top of this, don't rebuild it)
+## Codebase health summary (for awareness, NOT for driving proposals)
 ${findingsSummary}
 
 ## Already proposed or built (DO NOT duplicate)
@@ -137,44 +195,61 @@ Rules:
 - Do NOT re-propose anything from the "already proposed" list
 - Spec must be detailed enough for a coding agent to implement in one PR${wildCardInstructions}
 
-Respond in JSON format:
-\`\`\`json
+## Output
+Write a file called proposals.json in the project root containing a JSON array:
 [
   {
     "title": "Short imperative title (e.g., Build a generative art landing page)",
     "rationale": "Why this is exciting and what it adds to the product",
     "spec": "Detailed implementation spec: exact components to create, layout, interactions, animations, data flow. Be specific and creative.",
-    "priority": "high|medium|low",
-    "source_finding_titles": []
+    "priority": "high|medium|low"
   }
 ]
-\`\`\`
 
-Only return the JSON array. No other text.`,
-    }],
-  })
+IMPORTANT: You MUST create the proposals.json file before finishing. This is your primary deliverable.`
 
-  const text = response.content[0].type === 'text' ? response.content[0].text : ''
-  const jsonMatch = text.match(/\[[\s\S]*\]/)
-  if (!jsonMatch) {
-    console.log('[strategize] No valid JSON in response')
-    return
+    await logger.event('text', 'Running Claude CLI strategist...')
+    await runClaude({
+      prompt,
+      workDir,
+      timeoutMs: CLAUDE_TIMEOUT_MS,
+      logger,
+      logPrefix: `strategist-${jobId.slice(0, 8)}`,
+      restrictedEnv: true,
+    })
+
+    // Read proposals from file
+    const proposalsPath = join(workDir, 'proposals.json')
+    if (!existsSync(proposalsPath)) {
+      console.log('[strategize] CLI did not create proposals.json')
+      await logger.event('text', 'CLI did not create proposals.json — no proposals generated')
+      return
+    }
+
+    const proposalsText = readFileSync(proposalsPath, 'utf-8')
+    const jsonMatch = proposalsText.match(/\[[\s\S]*\]/)
+    if (!jsonMatch) {
+      console.log('[strategize] No valid JSON array in proposals.json')
+      return
+    }
+
+    try {
+      rawProposals = JSON.parse(jsonMatch[0])
+    } catch {
+      console.log('[strategize] Failed to parse proposals.json')
+      return
+    }
+
+    await logger.event('text', `CLI generated ${rawProposals.length} proposals`)
+  } finally {
+    if (existsSync(workDir)) rmSync(workDir, { recursive: true, force: true })
   }
 
-  let rawProposals: Array<{
-    title: string; rationale: string; spec: string; priority: string; source_finding_titles: string[]
-  }>
-  try {
-    rawProposals = JSON.parse(jsonMatch[0])
-  } catch {
-    console.log('[strategize] Failed to parse JSON')
-    return
-  }
+  if (rawProposals.length === 0) return
 
-  // Track all finding IDs that are addressed by proposals
-  const addressedFindingIds: string[] = []
+  // 4. Score each proposal with multi-grader evaluation (Haiku — fast + cheap)
+  const anthropic = getAnthropicClient()
 
-  // 4. Score each proposal with multi-grader evaluation
   for (const raw of rawProposals.slice(0, MAX_PROPOSALS_PER_RUN)) {
     const scoreResponse = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
@@ -213,23 +288,14 @@ Respond in JSON only:
       continue
     }
 
-    // 5. Map finding titles to IDs
-    const sourceFindingIds = (findings ?? [])
-      .filter(f => (raw.source_finding_titles ?? []).some(
-        title => title.toLowerCase() === f.title.toLowerCase()
-      ))
-      .map(f => f.id)
-
-    addressedFindingIds.push(...sourceFindingIds)
-
-    // 6. Insert proposal with source_finding_ids, cycle_id, and wild card flag
+    // 5. Insert proposal with cycle_id and wild card flag
     const { data: inserted, error } = await supabase.from('proposals').insert({
       project_id: projectId,
       title: raw.title,
       rationale: raw.rationale,
       spec: raw.spec,
       priority: raw.priority === 'high' ? 'high' : raw.priority === 'low' ? 'low' : 'medium',
-      source_finding_ids: sourceFindingIds,
+      source_finding_ids: [],
       scores,
       cycle_id: input.cycleId || null,
       is_wild_card: isWildCard,
@@ -238,7 +304,7 @@ Respond in JSON only:
     if (error) {
       console.error(`[strategize] Failed to insert proposal: ${error.message}`)
     } else {
-      console.log(`[strategize] Created proposal: "${raw.title}" (score: ${avgScore.toFixed(2)}, findings: ${sourceFindingIds.length})`)
+      console.log(`[strategize] Created proposal: "${raw.title}" (score: ${avgScore.toFixed(2)})`)
 
       await supabase.from('branch_events').insert({
         project_id: projectId,
@@ -249,25 +315,9 @@ Respond in JSON only:
           proposal_title: raw.title,
           scores,
           priority: raw.priority === 'high' ? 'high' : raw.priority === 'low' ? 'low' : 'medium',
-          source_finding_count: sourceFindingIds.length,
         },
         actor: 'strategist',
       })
-    }
-  }
-
-  // 7. Mark source findings as addressed
-  if (addressedFindingIds.length > 0) {
-    const uniqueIds = [...new Set(addressedFindingIds)]
-    const { error } = await supabase
-      .from('findings')
-      .update({ status: 'addressed', addressed_at: new Date().toISOString() })
-      .in('id', uniqueIds)
-
-    if (error) {
-      console.error(`[strategize] Failed to mark findings as addressed: ${error.message}`)
-    } else {
-      console.log(`[strategize] Marked ${uniqueIds.length} findings as addressed`)
     }
   }
 

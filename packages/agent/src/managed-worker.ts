@@ -5,7 +5,7 @@ import { classifyFailure } from './classify-failure.js'
 import { runSelfImproveJob } from './self-improve-worker.js'
 import { runStrategizeJob } from './strategize-worker.js'
 import { runScoutJob } from './scout-worker.js'
-import { runBuilderJob } from './builder-worker.js'
+import { runBuilderJob, runFixBuildJob } from './builder-worker.js'
 import { runReviewerJob } from './reviewer-worker.js'
 import { getInstallationToken, getInstallationFirstRepo, isGitHubAppConfigured } from './github-app.js'
 import { initCredentials, ensureValidToken } from './oauth.js'
@@ -176,7 +176,7 @@ async function handleFailedJob(
   job: { id: string; project_id: string; job_type?: string; github_issue_number: number; issue_body: string },
 ) {
   // Recursion guard: only classify agent (implement) job failures
-  if (['self_improve', 'setup', 'strategize', 'scout', 'build', 'review'].includes(job.job_type ?? '')) return
+  if (['self_improve', 'setup', 'strategize', 'scout', 'build', 'review', 'fix_build'].includes(job.job_type ?? '')) return
 
   try {
     // Find the run ID for this job
@@ -446,7 +446,7 @@ async function processJob(supabase: Supabase, job: {
       }
     } else if (job.job_type === 'review') {
       // Reviewer job: AI code review of a PR
-      let payload: { proposal_id?: string; pr_number?: number; head_sha?: string; branch_name?: string } = {}
+      let payload: { proposal_id?: string; pr_number?: number; head_sha?: string; branch_name?: string; remediation_attempt?: number } = {}
       try { payload = JSON.parse(job.issue_body) } catch {}
 
       if (!payload.proposal_id || !payload.pr_number || !payload.head_sha || !payload.branch_name) {
@@ -510,23 +510,115 @@ async function processJob(supabase: Supabase, job: {
           }
         }
       } else {
-        // Reviewer requested changes or rejected
-        console.log(`[${WORKER_ID}] Review rejected — proposal ${payload.proposal_id}`)
-        await notifySlack(`Review rejected PR #${payload.pr_number} — reviewer requested changes`)
-        await supabase.from('proposals')
-          .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Reviewer requested changes' })
-          .eq('id', payload.proposal_id)
+        // Review rejected — check if we can retry
+        const attempt = payload.remediation_attempt ?? 0
 
-        await supabase.from('branch_events').insert({
+        if (attempt < 1) {
+          // First rejection → queue fix-build to address reviewer concerns
+          console.log(`[${WORKER_ID}] Review rejected — queuing fix-build for PR #${payload.pr_number} (attempt ${attempt + 1})`)
+          await notifySlack(`Review rejected PR #${payload.pr_number} — spawning fix-build to address concerns`)
+
+          await supabase.from('branch_events').insert({
+            project_id: job.project_id,
+            branch_name: payload.branch_name,
+            event_type: 'review_rejected',
+            event_data: {
+              proposal_id: payload.proposal_id,
+              pr_number: payload.pr_number,
+              summary: reviewResult.summary,
+              concerns: reviewResult.concerns,
+              will_retry: true,
+            },
+            actor: 'reviewer',
+          })
+
+          // Queue fix-build job with reviewer feedback
+          await supabase.from('job_queue').insert({
+            project_id: job.project_id,
+            github_issue_number: job.github_issue_number,
+            issue_title: `Fix PR #${payload.pr_number} after review`,
+            issue_body: JSON.stringify({
+              proposal_id: payload.proposal_id,
+              pr_number: payload.pr_number,
+              branch_name: payload.branch_name,
+              review_summary: reviewResult.summary,
+              review_concerns: reviewResult.concerns,
+              remediation_attempt: attempt + 1,
+            }),
+            job_type: 'fix_build',
+            status: 'pending',
+          })
+        } else {
+          // Already retried — reject permanently
+          console.log(`[${WORKER_ID}] Review rejected after fix attempt — permanently rejecting proposal ${payload.proposal_id}`)
+          await notifySlack(`Review rejected PR #${payload.pr_number} after fix attempt — proposal permanently rejected`)
+
+          await supabase.from('proposals')
+            .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Reviewer requested changes (fix attempt failed)' })
+            .eq('id', payload.proposal_id)
+
+          await supabase.from('branch_events').insert({
+            project_id: job.project_id,
+            branch_name: payload.branch_name,
+            event_type: 'review_rejected',
+            event_data: { proposal_id: payload.proposal_id, pr_number: payload.pr_number, final: true },
+            actor: 'reviewer',
+          })
+
+          await checkCycleCompletion(supabase, job.project_id, payload.proposal_id!)
+        }
+      }
+    } else if (job.job_type === 'fix_build') {
+      // Fix-build job: clone PR branch, apply reviewer fixes, push to same PR
+      let fixPayload: {
+        proposal_id?: string; pr_number?: number; branch_name?: string;
+        review_summary?: string; review_concerns?: Array<{ file: string; line?: number; severity: string; comment: string }>;
+        remediation_attempt?: number;
+      } = {}
+      try { fixPayload = JSON.parse(job.issue_body) } catch {}
+
+      if (!fixPayload.proposal_id || !fixPayload.pr_number || !fixPayload.branch_name) {
+        throw new Error('Fix-build job missing required payload fields')
+      }
+
+      await notifySlack(`Fix-build started: addressing review on PR #${fixPayload.pr_number}`)
+
+      const result = await runFixBuildJob({
+        jobId: job.id,
+        projectId: job.project_id,
+        proposalId: fixPayload.proposal_id,
+        prNumber: fixPayload.pr_number,
+        branchName: fixPayload.branch_name,
+        reviewSummary: fixPayload.review_summary || '',
+        reviewConcerns: fixPayload.review_concerns || [],
+        supabase,
+      })
+
+      if (result.headSha) {
+        // Re-trigger review with updated SHA
+        console.log(`[${WORKER_ID}] Fix-build complete, re-triggering review for PR #${fixPayload.pr_number}`)
+        await supabase.from('job_queue').insert({
           project_id: job.project_id,
-          branch_name: payload.branch_name,
-          event_type: 'review_rejected',
-          event_data: { proposal_id: payload.proposal_id, pr_number: payload.pr_number },
-          actor: 'reviewer',
+          github_issue_number: job.github_issue_number,
+          issue_title: `Re-review PR #${fixPayload.pr_number}`,
+          issue_body: JSON.stringify({
+            proposal_id: fixPayload.proposal_id,
+            pr_number: fixPayload.pr_number,
+            head_sha: result.headSha,
+            branch_name: fixPayload.branch_name,
+            remediation_attempt: fixPayload.remediation_attempt ?? 1,
+          }),
+          job_type: 'review',
+          status: 'pending',
         })
-
-        // Check if all proposals in cycle are resolved — triggers next scout
-        await checkCycleCompletion(supabase, job.project_id, payload.proposal_id!)
+      } else {
+        // Fix produced no changes — reject proposal
+        console.log(`[${WORKER_ID}] Fix-build produced no changes — rejecting proposal`)
+        await notifySlack(`Fix-build produced no changes for PR #${fixPayload.pr_number} — proposal rejected`)
+        await supabase.from('proposals')
+          .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Fix-build produced no changes after review rejection' })
+          .eq('id', fixPayload.proposal_id)
+        await checkCycleCompletion(supabase, job.project_id, fixPayload.proposal_id!)
       }
     } else {
       // Default: implement job (existing flow)

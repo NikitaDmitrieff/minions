@@ -68,6 +68,8 @@ function getAnthropicClient(): Anthropic {
 export async function runReviewerJob(input: ReviewerInput): Promise<{
   approved: boolean
   reviewId: number | null
+  summary: string
+  concerns: Array<{ file: string; line?: number; severity: string; comment: string }>
 }> {
   const { jobId, projectId, proposalId, prNumber, headSha, branchName, supabase } = input
   const logger = new DbLogger(supabase, jobId)
@@ -113,7 +115,7 @@ export async function runReviewerJob(input: ReviewerInput): Promise<{
 
   if (!files.length) {
     await logger.event('text', 'No files changed in PR — skipping review')
-    return { approved: true, reviewId: null }
+    return { approved: true, reviewId: null, summary: '', concerns: [] }
   }
 
   await logger.event('text', `PR has ${files.length} changed files`)
@@ -317,5 +319,10 @@ ${review.security_issues ? '\n**Security issues detected** — review flagged po
     },
   })
 
-  return { approved: review.verdict === 'approve', reviewId: ghReview.id }
+  return {
+    approved: review.verdict === 'approve',
+    reviewId: ghReview.id,
+    summary: review.summary,
+    concerns: review.concerns,
+  }
 }
