@@ -59,6 +59,7 @@ export async function claudeEnv(restricted = false): Promise<NodeJS.ProcessEnv> 
       CI: 'true',
       NODE_ENV: 'production',
       CLAUDE_CODE_OAUTH_TOKEN: accessToken,
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '128000',
     }
   }
 
@@ -68,6 +69,7 @@ export async function claudeEnv(restricted = false): Promise<NodeJS.ProcessEnv> 
     ...rest,
     CI: 'true',
     CLAUDE_CODE_OAUTH_TOKEN: accessToken,
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: '128000',
   }
 }
 
