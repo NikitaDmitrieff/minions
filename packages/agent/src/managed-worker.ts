@@ -687,7 +687,7 @@ async function processJob(supabase: Supabase, job: {
       }
 
       // Mark pipeline_run as failed for build/review jobs on permanent failure
-      if (isPermanentFailure && ['build', 'review'].includes(job.job_type ?? '')) {
+      if (isPermanentFailure && ['build', 'review', 'fix_build'].includes(job.job_type ?? '')) {
         const { data: failedRun } = await supabase
           .from('pipeline_runs')
           .select('id')
