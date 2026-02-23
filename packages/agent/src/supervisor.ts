@@ -11,7 +11,6 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
 import { createSupabaseClient } from './supabase.js'
 import { ensureValidToken, initCredentials } from './oauth.js'
-import { claudeEnv } from './claude-cli.js'
 
 type Supabase = ReturnType<typeof createSupabaseClient>
 
@@ -24,7 +23,6 @@ const MERGE_LOCK_THRESHOLD_MS = 5 * 60 * 1000    // 5 min
 const TOKEN_REFRESH_BUFFER_MS = 30 * 60 * 1000   // 30 min before expiry
 const MAX_RESTART_BACKOFF_MS = 60_000
 const WORKER_SCRIPT = join(import.meta.dirname, 'managed-worker.js')
-const WATCHDOG_TIMEOUT_MS = 60_000     // 60s max for watchdog CLI
 
 // ── ANSI Colors ─────────────────────────────────────────────────────────────
 const c = {
@@ -72,8 +70,6 @@ const digestEvents: string[] = []
 let pipelineStage = 'idle'      // Current activity: idle, scout, strategize, build, review
 let pipelineDetail = ''          // Extra context (proposal title, PR number, etc.)
 const supabase = createSupabaseClient()
-const LOG_BUFFER_MAX = 100
-const logBuffer: string[] = []
 
 // ── Log Intelligence ────────────────────────────────────────────────────────
 /** Patterns to detect in worker stdout — triggers alerts and stage tracking. */
@@ -361,8 +357,6 @@ function startWorker(): void {
     const lines = data.toString().split('\n').filter(l => l.trim())
     for (const line of lines) {
       console.log(colorize(line))
-      logBuffer.push(line)
-      if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift()
       analyzeWorkerLine(line)
     }
   })
@@ -396,294 +390,6 @@ function startWorker(): void {
   })
 
   console.log(`${c.green}${c.bold}[supervisor] Worker started (pid ${worker.pid})${c.reset}`)
-}
-
-// ── Watchdog ─────────────────────────────────────────────────────────────────
-
-interface WatchdogAction {
-  type: 'send_slack' | 'retrigger_job' | 'reject_proposal' | 'release_merge_lock' | 'trigger_scout' | 'reset_job_attempts'
-  job_id?: string
-  proposal_id?: string
-  project_id?: string
-  message?: string
-  reason?: string
-}
-
-interface WatchdogResponse {
-  diagnosis: string
-  slack_message?: string
-  actions: WatchdogAction[]
-}
-
-async function gatherWatchdogContext(): Promise<string> {
-  const [
-    { data: jobs },
-    { data: proposals },
-    { data: recentEvents },
-    { data: projects },
-  ] = await Promise.all([
-    supabase.from('job_queue')
-      .select('id, job_type, status, last_error, attempt_count, locked_at, worker_id')
-      .in('status', ['pending', 'processing', 'failed'])
-      .order('created_at', { ascending: false })
-      .limit(20),
-    supabase.from('proposals')
-      .select('id, title, status, priority, created_at, completed_at, reject_reason')
-      .in('status', ['draft', 'approved', 'implementing', 'done', 'rejected'])
-      .order('created_at', { ascending: false })
-      .limit(15),
-    supabase.from('branch_events')
-      .select('event_type, event_data, branch_name, created_at, actor')
-      .order('created_at', { ascending: false })
-      .limit(20),
-    supabase.from('projects')
-      .select('id, github_repo, autonomy_mode, paused, merge_in_progress, product_context, strategic_nudges')
-      .eq('paused', false),
-  ])
-
-  const sections: string[] = []
-
-  sections.push(`## Pipeline Stage\nCurrent: ${pipelineStage}${pipelineDetail ? ` (${pipelineDetail})` : ''}`)
-  sections.push(`Worker uptime: ${Math.round((Date.now() - workerStartedAt) / 60000)} min, restarts: ${restartCount}`)
-
-  if (jobs && jobs.length > 0) {
-    sections.push(`\n## Jobs (${jobs.length})\n${jobs.map(j =>
-      `- [${j.status}] ${j.job_type} (id: ${(j.id ?? '').slice(0, 8)})${j.last_error ? ` ERROR: ${j.last_error.slice(0, 200)}` : ''}${j.locked_at ? ` locked: ${j.locked_at}` : ''}`
-    ).join('\n')}`)
-  } else {
-    sections.push(`\n## Jobs\nNo active jobs.`)
-  }
-
-  if (proposals && proposals.length > 0) {
-    sections.push(`\n## Proposals (${proposals.length})\n${proposals.map(p =>
-      `- [${p.status}] "${p.title ?? 'untitled'}" (id: ${(p.id ?? '').slice(0, 8)}, priority: ${p.priority ?? 'none'})${p.reject_reason ? ` rejected: ${p.reject_reason}` : ''}`
-    ).join('\n')}`)
-  } else {
-    sections.push(`\n## Proposals\nNo recent proposals.`)
-  }
-
-  if (recentEvents && recentEvents.length > 0) {
-    sections.push(`\n## Recent Events (last 20)\n${recentEvents.map(e =>
-      `- ${e.created_at} [${e.event_type}] branch:${e.branch_name} actor:${e.actor}${e.event_data ? ` data:${JSON.stringify(e.event_data).slice(0, 150)}` : ''}`
-    ).join('\n')}`)
-  }
-
-  if (projects && projects.length > 0) {
-    sections.push(`\n## Projects\n${projects.map(p =>
-      `- ${p.github_repo} (mode: ${p.autonomy_mode}, paused: ${p.paused}, merge_lock: ${p.merge_in_progress})`
-    ).join('\n')}`)
-  }
-
-  if (digestEvents.length > 0) {
-    sections.push(`\n## Recent Digest Events\n${digestEvents.map(e => `- ${e}`).join('\n')}`)
-  }
-
-  return sections.join('\n')
-}
-
-function buildWatchdogPrompt(context: string, recentLogs: string): string {
-  return `You are the AI watchdog for the Minions autonomous pipeline.
-
-Your PRIMARY job is to OBSERVE and REPORT. You are NOT an operator.
-You are CAUTIOUS. You PREFER sending a Slack message over taking action.
-
-RULES:
-- NEVER write, edit, delete, or create files
-- NEVER run bash commands
-- You may read source files to understand how the system works
-- Your default action is send_slack — explain what's happening to the owner
-- ONLY take corrective actions when the fix is TRIVIALLY OBVIOUS and SAFE
-- When in doubt, just report to the owner via send_slack — don't act
-- Return ONLY a JSON object, no markdown fences, no explanation
-
-CURRENT PIPELINE STATE:
-${context}
-
-RECENT WORKER LOGS (last ${LOG_BUFFER_MAX} lines):
-${recentLogs}
-
-AVAILABLE ACTIONS (use sparingly — prefer send_slack):
-- send_slack(message) — ALWAYS allowed. Your primary tool. Explain what's happening.
-- retrigger_job(job_id, reason) — ONLY for jobs stuck in "processing" for >30min with no worker activity
-- reject_proposal(proposal_id, reason) — ONLY for proposals stuck in "approved" with no corresponding build job
-- release_merge_lock(project_id) — ONLY for merge locks held >10min with no active merge
-- trigger_scout(project_id) — ONLY when pipeline is clearly idle with no jobs and no in-flight proposals
-- reset_job_attempts(job_id) — ONLY for jobs failed due to clearly transient errors (network, timeout)
-
-IMPORTANT: If everything looks healthy and normal, return { "diagnosis": "Pipeline is healthy", "actions": [] } with NO slack_message. Do not report routine operations.
-
-Respond with JSON only (no markdown, no code fences):
-{
-  "diagnosis": "Plain English explanation of what's happening and why",
-  "slack_message": "Message for the owner (ONLY if something noteworthy — omit if routine)",
-  "actions": [
-    { "type": "send_slack", "message": "..." }
-  ]
-}`
-}
-
-async function executeWatchdogAction(action: WatchdogAction): Promise<void> {
-  switch (action.type) {
-    case 'send_slack':
-      if (action.message) {
-        await sendSlack(`🐕 *Watchdog*\n${action.message}`)
-        console.log(`${c.cyan}[watchdog] Action: send_slack${c.reset}`)
-      }
-      break
-
-    case 'retrigger_job':
-      if (action.job_id) {
-        await supabase.from('job_queue')
-          .update({ status: 'pending', worker_id: null, locked_at: null })
-          .eq('id', action.job_id)
-        console.log(`${c.green}[watchdog] Action: retrigger_job ${(action.job_id ?? '').slice(0, 8)} — ${action.reason ?? 'no reason'}${c.reset}`)
-        queueDigestEvent(`Watchdog retriggered job ${(action.job_id ?? '').slice(0, 8)}`)
-      }
-      break
-
-    case 'reject_proposal':
-      if (action.proposal_id) {
-        await supabase.from('proposals')
-          .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: `Watchdog: ${action.reason ?? 'stuck proposal'}` })
-          .eq('id', action.proposal_id)
-        console.log(`${c.green}[watchdog] Action: reject_proposal ${(action.proposal_id ?? '').slice(0, 8)} — ${action.reason ?? 'no reason'}${c.reset}`)
-        queueDigestEvent(`Watchdog rejected proposal ${(action.proposal_id ?? '').slice(0, 8)}`)
-      }
-      break
-
-    case 'release_merge_lock':
-      if (action.project_id) {
-        await supabase.from('projects')
-          .update({ merge_in_progress: false })
-          .eq('id', action.project_id)
-        console.log(`${c.green}[watchdog] Action: release_merge_lock${c.reset}`)
-        queueDigestEvent('Watchdog released merge lock')
-      }
-      break
-
-    case 'trigger_scout':
-      if (action.project_id) {
-        await supabase.from('job_queue').insert({
-          project_id: action.project_id,
-          github_issue_number: 0,
-          issue_title: 'Watchdog-triggered scout',
-          issue_body: '{}',
-          job_type: 'scout',
-          status: 'pending',
-        })
-        console.log(`${c.green}[watchdog] Action: trigger_scout${c.reset}`)
-        queueDigestEvent('Watchdog triggered scout')
-      }
-      break
-
-    case 'reset_job_attempts':
-      if (action.job_id) {
-        await supabase.from('job_queue')
-          .update({ attempt_count: 0, last_error: null })
-          .eq('id', action.job_id)
-        console.log(`${c.green}[watchdog] Action: reset_job_attempts ${(action.job_id ?? '').slice(0, 8)}${c.reset}`)
-        queueDigestEvent(`Watchdog reset attempts for job ${(action.job_id ?? '').slice(0, 8)}`)
-      }
-      break
-
-    default:
-      console.log(`${c.yellow}[watchdog] Ignored unknown action: ${(action as WatchdogAction).type}${c.reset}`)
-  }
-}
-
-async function runWatchdog(): Promise<void> {
-  // Skip during builds to avoid CLI concurrency issues
-  if (pipelineStage === 'build') {
-    console.log(`${c.gray}[watchdog] Skipped — build in progress${c.reset}`)
-    return
-  }
-
-  let env: NodeJS.ProcessEnv
-  try {
-    env = await claudeEnv(true)
-  } catch {
-    console.log(`${c.yellow}[watchdog] Skipped — OAuth not available${c.reset}`)
-    return
-  }
-
-  const context = await gatherWatchdogContext()
-  const recentLogs = logBuffer.join('\n')
-  const prompt = buildWatchdogPrompt(context, recentLogs)
-
-  console.log(`${c.cyan}${c.bold}[watchdog] Running AI diagnosis...${c.reset}`)
-
-  try {
-    const result = await new Promise<string>((resolve, reject) => {
-      const args = [
-        '--dangerously-skip-permissions',
-        '--permission-mode', 'dontAsk',
-        '--output-format', 'json',
-        '--model', 'claude-sonnet-4-6',
-        '--verbose',
-        '-p', prompt,
-      ]
-
-      const proc = spawn('claude', args, {
-        cwd: join(import.meta.dirname, '..'),
-        env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
-
-      proc.stdin.end()
-
-      let stdout = ''
-      let stderr = ''
-      proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
-
-      const timeout = setTimeout(() => {
-        proc.kill('SIGTERM')
-        reject(new Error('Watchdog CLI timed out after 60s'))
-      }, WATCHDOG_TIMEOUT_MS)
-
-      proc.on('close', (code) => {
-        clearTimeout(timeout)
-        if (code === 0 || code === null) resolve(stdout)
-        else reject(new Error(`Watchdog CLI exited with code ${code}: ${stderr.slice(-500)}`))
-      })
-
-      proc.on('error', (err) => {
-        clearTimeout(timeout)
-        reject(err)
-      })
-    })
-
-    // Parse the JSON response — CLI --output-format json wraps in { result: "..." }
-    let response: WatchdogResponse
-    try {
-      const parsed = JSON.parse(result)
-      const text = parsed.result ?? parsed.text ?? result
-      const inner = typeof text === 'string' ? JSON.parse(text) : text
-      response = inner as WatchdogResponse
-    } catch {
-      try {
-        response = JSON.parse(result) as WatchdogResponse
-      } catch {
-        console.log(`${c.yellow}[watchdog] Could not parse response — raw: ${result.slice(0, 300)}${c.reset}`)
-        return
-      }
-    }
-
-    console.log(`${c.cyan}[watchdog] Diagnosis: ${response.diagnosis.slice(0, 200)}${c.reset}`)
-
-    if (response.slack_message) {
-      await sendSlack(`🐕 *Watchdog*\n${response.slack_message}`)
-      console.log(`${c.cyan}[watchdog] Sent Slack message${c.reset}`)
-    }
-
-    for (const action of response.actions ?? []) {
-      await executeWatchdogAction(action)
-    }
-
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.log(`${c.yellow}[watchdog] Error: ${msg.slice(0, 200)}${c.reset}`)
-  }
 }
 
 // ── Health Checks ───────────────────────────────────────────────────────────
@@ -826,12 +532,6 @@ async function healthCheck(): Promise<void> {
     }
   }
 
-  // 8. AI Watchdog — diagnose pipeline health with Claude
-  try {
-    await runWatchdog()
-  } catch (err) {
-    console.log(`${c.yellow}[watchdog] Watchdog error: ${err instanceof Error ? err.message : String(err)}${c.reset}`)
-  }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
