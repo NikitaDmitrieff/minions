@@ -302,6 +302,7 @@ async function sendDigest(): Promise<void> {
 
 // ── Worker Management ───────────────────────────────────────────────────────
 async function releaseOrphanedJobs(): Promise<void> {
+  // Release stuck processing jobs
   const { data: orphans } = await supabase
     .from('job_queue')
     .select('id, job_type')
@@ -312,9 +313,36 @@ async function releaseOrphanedJobs(): Promise<void> {
       await supabase.from('job_queue')
         .update({ status: 'pending', worker_id: null, locked_at: null })
         .eq('id', job.id)
-      console.log(`${c.yellow}[supervisor] Released orphaned ${job.job_type} job ${job.id.slice(0, 8)}${c.reset}`)
+      console.log(`${c.yellow}[supervisor] Released orphaned ${job.job_type} job ${(job.id ?? '').slice(0, 8)}${c.reset}`)
     }
   }
+
+  // Reject proposals stuck in 'approved' with no corresponding build job
+  const { data: stuckProposals } = await supabase
+    .from('proposals')
+    .select('id, title')
+    .in('status', ['approved', 'implementing'])
+
+  if (stuckProposals && stuckProposals.length > 0) {
+    for (const p of stuckProposals) {
+      // Check if there's an active build job for this proposal
+      const { count } = await supabase
+        .from('job_queue')
+        .select('id', { count: 'exact', head: true })
+        .eq('job_type', 'build')
+        .in('status', ['pending', 'processing'])
+
+      if ((count ?? 0) === 0) {
+        await supabase.from('proposals')
+          .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Orphaned after supervisor restart' })
+          .eq('id', p.id)
+        console.log(`${c.yellow}[supervisor] Rejected orphaned proposal "${p.title ?? 'untitled'}" ${(p.id ?? '').slice(0, 8)}${c.reset}`)
+      }
+    }
+  }
+
+  // Release stuck merge locks
+  await supabase.from('projects').update({ merge_in_progress: false }).eq('merge_in_progress', true)
 }
 
 function startWorker(): void {
@@ -420,7 +448,7 @@ async function gatherWatchdogContext(): Promise<string> {
 
   if (jobs && jobs.length > 0) {
     sections.push(`\n## Jobs (${jobs.length})\n${jobs.map(j =>
-      `- [${j.status}] ${j.job_type} (id: ${j.id.slice(0, 8)})${j.last_error ? ` ERROR: ${j.last_error.slice(0, 200)}` : ''}${j.locked_at ? ` locked: ${j.locked_at}` : ''}`
+      `- [${j.status}] ${j.job_type} (id: ${(j.id ?? '').slice(0, 8)})${j.last_error ? ` ERROR: ${j.last_error.slice(0, 200)}` : ''}${j.locked_at ? ` locked: ${j.locked_at}` : ''}`
     ).join('\n')}`)
   } else {
     sections.push(`\n## Jobs\nNo active jobs.`)
@@ -428,7 +456,7 @@ async function gatherWatchdogContext(): Promise<string> {
 
   if (proposals && proposals.length > 0) {
     sections.push(`\n## Proposals (${proposals.length})\n${proposals.map(p =>
-      `- [${p.status}] "${p.title}" (id: ${p.id.slice(0, 8)}, priority: ${p.priority})${p.reject_reason ? ` rejected: ${p.reject_reason}` : ''}`
+      `- [${p.status}] "${p.title ?? 'untitled'}" (id: ${(p.id ?? '').slice(0, 8)}, priority: ${p.priority ?? 'none'})${p.reject_reason ? ` rejected: ${p.reject_reason}` : ''}`
     ).join('\n')}`)
   } else {
     sections.push(`\n## Proposals\nNo recent proposals.`)
@@ -508,8 +536,8 @@ async function executeWatchdogAction(action: WatchdogAction): Promise<void> {
         await supabase.from('job_queue')
           .update({ status: 'pending', worker_id: null, locked_at: null })
           .eq('id', action.job_id)
-        console.log(`${c.green}[watchdog] Action: retrigger_job ${action.job_id.slice(0, 8)} — ${action.reason ?? 'no reason'}${c.reset}`)
-        queueDigestEvent(`Watchdog retriggered job ${action.job_id.slice(0, 8)}`)
+        console.log(`${c.green}[watchdog] Action: retrigger_job ${(action.job_id ?? '').slice(0, 8)} — ${action.reason ?? 'no reason'}${c.reset}`)
+        queueDigestEvent(`Watchdog retriggered job ${(action.job_id ?? '').slice(0, 8)}`)
       }
       break
 
@@ -518,8 +546,8 @@ async function executeWatchdogAction(action: WatchdogAction): Promise<void> {
         await supabase.from('proposals')
           .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: `Watchdog: ${action.reason ?? 'stuck proposal'}` })
           .eq('id', action.proposal_id)
-        console.log(`${c.green}[watchdog] Action: reject_proposal ${action.proposal_id.slice(0, 8)} — ${action.reason ?? 'no reason'}${c.reset}`)
-        queueDigestEvent(`Watchdog rejected proposal ${action.proposal_id.slice(0, 8)}`)
+        console.log(`${c.green}[watchdog] Action: reject_proposal ${(action.proposal_id ?? '').slice(0, 8)} — ${action.reason ?? 'no reason'}${c.reset}`)
+        queueDigestEvent(`Watchdog rejected proposal ${(action.proposal_id ?? '').slice(0, 8)}`)
       }
       break
 
@@ -553,8 +581,8 @@ async function executeWatchdogAction(action: WatchdogAction): Promise<void> {
         await supabase.from('job_queue')
           .update({ attempt_count: 0, last_error: null })
           .eq('id', action.job_id)
-        console.log(`${c.green}[watchdog] Action: reset_job_attempts ${action.job_id.slice(0, 8)}${c.reset}`)
-        queueDigestEvent(`Watchdog reset attempts for job ${action.job_id.slice(0, 8)}`)
+        console.log(`${c.green}[watchdog] Action: reset_job_attempts ${(action.job_id ?? '').slice(0, 8)}${c.reset}`)
+        queueDigestEvent(`Watchdog reset attempts for job ${(action.job_id ?? '').slice(0, 8)}`)
       }
       break
 
