@@ -22,22 +22,24 @@ export class DbLogger {
 
   async log(message: string, level = 'info') {
     console.log(`[${level}] ${message}`)
-    await this.supabase.from('run_logs').insert({
+    const { error } = await this.supabase.from('run_logs').insert({
       run_id: this.runId,
       level,
       message,
     })
+    if (error) console.error(`[logger] Failed to write log: ${error.message}`)
   }
 
   async event(eventType: LogEventType, message: string, payload?: LogPayload) {
     console.log(`[${eventType}] ${message}`)
-    await this.supabase.from('run_logs').insert({
+    const { error } = await this.supabase.from('run_logs').insert({
       run_id: this.runId,
       level: eventType === 'error' ? 'error' : 'info',
       message,
       event_type: eventType,
       payload: payload ?? null,
     })
+    if (error) console.error(`[logger] Failed to write log: ${error.message}`)
   }
 
   async error(message: string) {

@@ -20,6 +20,7 @@ export interface ReviewerInput {
   prNumber: number
   headSha: string
   branchName: string
+  pipelineRunId?: string
   supabase: Supabase
 }
 
@@ -70,8 +71,8 @@ export async function runReviewerJob(input: ReviewerInput): Promise<{
   summary: string
   concerns: Array<{ file: string; line?: number; severity: string; comment: string }>
 }> {
-  const { jobId, projectId, proposalId, prNumber, headSha, branchName, supabase } = input
-  const logger = new DbLogger(supabase, jobId)
+  const { jobId, projectId, proposalId, prNumber, headSha, branchName, pipelineRunId, supabase } = input
+  const logger = new DbLogger(supabase, pipelineRunId ?? jobId)
   const workDir = `/tmp/reviewer-${jobId.slice(0, 8)}`
 
   // Fetch project GitHub config

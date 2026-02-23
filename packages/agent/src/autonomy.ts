@@ -297,18 +297,25 @@ export async function autoMergePR(
             expected_head_sha: pr.head.sha,
           })
 
-          // Branch updated successfully — re-trigger review with new HEAD
-          console.log(`[autonomy] Branch updated via API — re-queuing review for PR #${payload.pr_number}`)
+          // Branch updated successfully — fetch new HEAD and re-trigger review
+          const { data: updatedPr } = await octokit.pulls.get({
+            owner,
+            repo: repoName,
+            pull_number: payload.pr_number,
+          })
+          const newHeadSha = updatedPr.head.sha
+
+          console.log(`[autonomy] Branch updated via API — re-queuing review for PR #${payload.pr_number} (new HEAD: ${newHeadSha.slice(0, 7)})`)
           await notifySlack(`🔀 *Conflict resolved* via branch update — re-reviewing ${ghPrLink(repo, payload.pr_number)}`)
           await supabase.from('branch_events').insert({
             project_id: projectId,
             branch_name: payload.branch_name,
             event_type: 'branch_updated',
-            event_data: { pr_number: payload.pr_number, reason: 'conflict_resolution' },
+            event_data: { pr_number: payload.pr_number, reason: 'conflict_resolution', new_head_sha: newHeadSha },
             actor: 'autonomy',
           })
 
-          // Re-queue review (HEAD changed after update)
+          // Re-queue review with the NEW head SHA
           await supabase.from('job_queue').insert({
             project_id: projectId,
             github_issue_number: 0,
@@ -316,6 +323,7 @@ export async function autoMergePR(
             issue_body: JSON.stringify({
               proposal_id: payload.proposal_id,
               pr_number: payload.pr_number,
+              head_sha: newHeadSha,
               branch_name: payload.branch_name,
               remediation_attempt: 0,
             }),

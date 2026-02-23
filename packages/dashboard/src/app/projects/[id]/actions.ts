@@ -53,42 +53,9 @@ export async function markStepDone(projectId: string, stepKey: string) {
     .eq('id', projectId)
 }
 
-export async function triggerSetup(projectId: string) {
-  const supabase = await createClient()
-
-  // Verify project exists and has GitHub App installed
-  const { data: project } = await supabase
-    .from('projects')
-    .select('id, github_repo, github_installation_id, setup_status')
-    .eq('id', projectId)
-    .single()
-
-  if (!project) return { error: 'Project not found' }
-  if (!project.github_installation_id) return { error: 'GitHub App not installed' }
-  if (project.setup_status === 'queued' || project.setup_status === 'cloning' || project.setup_status === 'generating' || project.setup_status === 'committing') {
-    return { error: 'Setup already in progress' }
-  }
-
-  // Create setup job (github_issue_number/issue_body not applicable for setup jobs)
-  const { error: jobError } = await supabase
-    .from('job_queue')
-    .insert({
-      project_id: projectId,
-      job_type: 'setup',
-      github_issue_number: 0,
-      issue_title: `Setup: ${project.github_repo}`,
-      issue_body: '',
-    })
-
-  if (jobError) return { error: 'Failed to create setup job' }
-
-  // Update project status
-  await supabase
-    .from('projects')
-    .update({ setup_status: 'queued', setup_error: null })
-    .eq('id', projectId)
-
-  return { success: true }
+export async function triggerSetup(_projectId: string) {
+  // Setup worker was removed — setup is no longer handled by the agent pipeline
+  return { error: 'Setup is not available. Configure your project via the Settings page.' }
 }
 
 export async function triggerScout(projectId: string) {

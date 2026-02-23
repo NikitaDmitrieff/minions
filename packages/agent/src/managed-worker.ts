@@ -374,6 +374,7 @@ async function processJob(supabase: Supabase, job: {
         status: 'pending',
         worker_id: null,
         locked_at: null,
+        attempt_count: Math.max(0, (job.attempt_count ?? 1) - 1),
       }).eq('id', job.id)
       return
     }
@@ -483,6 +484,7 @@ async function processJob(supabase: Supabase, job: {
         branchName: payload.branch_name,
         spec: payload.spec,
         title: payload.title || job.issue_title,
+        pipelineRunId: buildRunId,
         supabase,
       })
 
@@ -537,7 +539,7 @@ async function processJob(supabase: Supabase, job: {
           .eq('id', payload.proposal_id)
 
         await supabase.from('pipeline_runs')
-          .update({ stage: 'failed', completed_at: new Date().toISOString(), result: 'failure' })
+          .update({ stage: 'failed', completed_at: new Date().toISOString(), result: 'failed' })
           .eq('id', buildRunId)
 
         // Trigger cycle completion check so pipeline doesn't stall
@@ -551,6 +553,12 @@ async function processJob(supabase: Supabase, job: {
       if (!payload.proposal_id || !payload.pr_number || !payload.head_sha || !payload.branch_name) {
         throw new Error('Review job missing required payload fields: proposal_id, pr_number, head_sha, branch_name')
       }
+
+      // Find pipeline run for logging
+      let reviewRunId: string | undefined
+      try {
+        reviewRunId = await findRunId(supabase, job.project_id, job.github_issue_number, job.id)
+      } catch { /* no run found — logger will fall back to jobId */ }
 
       await supabase.from('branch_events').insert({
         project_id: job.project_id,
@@ -571,6 +579,7 @@ async function processJob(supabase: Supabase, job: {
         prNumber: payload.pr_number,
         headSha: payload.head_sha,
         branchName: payload.branch_name,
+        pipelineRunId: reviewRunId,
         supabase,
       })
 
@@ -682,6 +691,12 @@ async function processJob(supabase: Supabase, job: {
 
       await notifySlack(`🔧 *Fix-build started* — addressing review on ${ghRepo ? ghPrLink(ghRepo, fixPayload.pr_number) : `PR #${fixPayload.pr_number}`}\n${(fixPayload.review_concerns || []).length} concern${(fixPayload.review_concerns || []).length !== 1 ? 's' : ''} to fix`, fixPayload.proposal_id)
 
+      // Find pipeline run for logging
+      let fixRunId: string | undefined
+      try {
+        fixRunId = await findRunId(supabase, job.project_id, job.github_issue_number, job.id)
+      } catch { /* no run found — logger will fall back to jobId */ }
+
       const result = await runFixBuildJob({
         jobId: job.id,
         projectId: job.project_id,
@@ -690,6 +705,7 @@ async function processJob(supabase: Supabase, job: {
         branchName: fixPayload.branch_name,
         reviewSummary: fixPayload.review_summary || '',
         reviewConcerns: fixPayload.review_concerns || [],
+        pipelineRunId: fixRunId,
         supabase,
       })
 

@@ -113,13 +113,8 @@ export async function POST(
       job_type: 'build',
     }).select('id').single())
   } else {
-    // Default agent job
-    ({ data: job, error: jobError } = await supabase.from('job_queue').insert({
-      project_id: project.id,
-      github_issue_number: issue.number,
-      issue_title: issue.title ?? '',
-      issue_body: issue.body ?? '',
-    }).select('id').single())
+    // No matching proposal — only proposal-driven builds are supported
+    return NextResponse.json({ status: 'ignored', reason: 'no_matching_proposal' })
   }
 
   if (jobError || !job) {

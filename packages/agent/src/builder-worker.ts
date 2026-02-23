@@ -21,6 +21,7 @@ export interface BuilderInput {
   branchName: string
   spec: string
   title: string
+  pipelineRunId?: string
   supabase: Supabase
 }
 
@@ -80,20 +81,22 @@ export async function runBuilderJob(input: BuilderInput): Promise<{
   prUrl: string | null
   headSha: string | null
 }> {
-  const { jobId, projectId, proposalId, branchName, spec, title, supabase } = input
+  const { jobId, projectId, proposalId, branchName, spec, title, pipelineRunId, supabase } = input
   const workDir = `/tmp/builder-${jobId.slice(0, 8)}`
-  const logger = new DbLogger(supabase, jobId)
+  const logger = new DbLogger(supabase, pipelineRunId ?? jobId)
 
   // Fetch GitHub config for this project
   const { data: project } = await supabase
     .from('projects')
-    .select('github_repo, github_installation_id')
+    .select('github_repo, github_installation_id, default_branch')
     .eq('id', projectId)
     .single()
 
   if (!project?.github_repo) {
     throw new Error(`Project ${projectId} has no github_repo`)
   }
+
+  const defaultBranch: string = (project as Record<string, unknown>).default_branch as string || 'main'
 
   // Get a token — prefer GitHub App installation token, fallback to PAT
   let token: string
@@ -311,7 +314,7 @@ ${validationResult.errorOutput.slice(-4000)}`
       title: `feat: ${title}`,
       body: `## Summary\n\nImplemented from proposal \`${proposalId.slice(0, 8)}\`.\n\n### Specification\n${spec.slice(0, 2000)}\n\n---\n*Auto-implemented by the builder agent.*`,
       head: branchName,
-      base: 'main',
+      base: defaultBranch,
     })
 
     await logger.event('text', `PR created: #${pr.number} — ${pr.html_url}`)
@@ -362,24 +365,27 @@ export interface FixBuildInput {
   branchName: string
   reviewSummary: string
   reviewConcerns: Array<{ file: string; line?: number; severity: string; comment: string }>
+  pipelineRunId?: string
   supabase: Supabase
 }
 
 export async function runFixBuildJob(input: FixBuildInput): Promise<{
   headSha: string | null
 }> {
-  const { jobId, projectId, proposalId, prNumber, branchName, reviewSummary, reviewConcerns, supabase } = input
+  const { jobId, projectId, proposalId, prNumber, branchName, reviewSummary, reviewConcerns, pipelineRunId, supabase } = input
   const workDir = `/tmp/fixbuild-${jobId.slice(0, 8)}`
-  const logger = new DbLogger(supabase, jobId)
+  const logger = new DbLogger(supabase, pipelineRunId ?? jobId)
 
   // Fetch GitHub config (reuse same pattern as runBuilderJob)
   const { data: project } = await supabase
     .from('projects')
-    .select('github_repo, github_installation_id')
+    .select('github_repo, github_installation_id, default_branch')
     .eq('id', projectId)
     .single()
 
   if (!project?.github_repo) throw new Error(`Project ${projectId} has no github_repo`)
+
+  const defaultBranch: string = (project as Record<string, unknown>).default_branch as string || 'main'
 
   let token: string
   if (project.github_installation_id) {
@@ -407,10 +413,10 @@ export async function runFixBuildJob(input: FixBuildInput): Promise<{
       `https://x-access-token:${token}@github.com/${project.github_repo}.git`, workDir,
     ], { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] })
 
-    // Fetch main and attempt merge — so fixes are applied on top of latest main
+    // Fetch default branch and attempt merge — so fixes are applied on top of latest
     const isConflictFix = reviewSummary.toLowerCase().includes('merge conflict')
     try {
-      execFileSync('git', ['fetch', 'origin', 'main', '--depth=50'], {
+      execFileSync('git', ['fetch', 'origin', defaultBranch, '--depth=50'], {
         cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
       })
       // Set git identity for merge commit
@@ -421,10 +427,10 @@ export async function runFixBuildJob(input: FixBuildInput): Promise<{
         cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
       })
       try {
-        execFileSync('git', ['merge', 'origin/main', '--no-edit'], {
+        execFileSync('git', ['merge', `origin/${defaultBranch}`, '--no-edit'], {
           cwd: workDir, timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
         })
-        await logger.event('text', 'Merged main into PR branch successfully')
+        await logger.event('text', `Merged ${defaultBranch} into PR branch successfully`)
       } catch {
         // Merge conflicts — abort and let CLI resolve them
         execFileSync('git', ['merge', '--abort'], {
@@ -433,7 +439,7 @@ export async function runFixBuildJob(input: FixBuildInput): Promise<{
         await logger.event('text', 'Merge conflicts detected — CLI will resolve them')
       }
     } catch {
-      await logger.event('text', 'Could not fetch main — proceeding without merge')
+      await logger.event('text', `Could not fetch ${defaultBranch} — proceeding without merge`)
     }
 
     // Write headless CLAUDE.md
@@ -462,9 +468,9 @@ export async function runFixBuildJob(input: FixBuildInput): Promise<{
     const prompt = isConflictFix
       ? `You are resolving merge conflicts on PR #${prNumber}.
 
-The PR branch has diverged from main. You need to:
-1. Run \`git fetch origin main\` and \`git merge origin/main\` to bring in the latest changes
-2. If there are merge conflicts, resolve them — keep BOTH the PR's new features AND main's changes
+The PR branch has diverged from ${defaultBranch}. You need to:
+1. Run \`git fetch origin ${defaultBranch}\` and \`git merge origin/${defaultBranch}\` to bring in the latest changes
+2. If there are merge conflicts, resolve them — keep BOTH the PR's new features AND ${defaultBranch}'s changes
 3. Make sure the merged code compiles, builds, and tests pass
 4. Commit the merge resolution
 
