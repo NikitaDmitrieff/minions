@@ -47,7 +47,15 @@ export function RunsTable({ runs, githubRepo, projectId }: Props) {
                 className="cursor-pointer border-b border-edge/50 transition-colors last:border-0 hover:bg-surface-hover"
               >
                 <td className="px-5 py-3 font-[family-name:var(--font-mono)] text-xs text-fg">
-                  #{run.github_issue_number}
+                  <a
+                    href={`https://github.com/${githubRepo}/issues/${run.github_issue_number}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent transition-colors hover:text-fg"
+                    onClick={e => e.stopPropagation()}
+                  >
+                    #{run.github_issue_number}
+                  </a>
                 </td>
                 <td className="max-w-[200px] px-5 py-3">
                   <span className="text-xs text-dim">{run.triggered_by ?? 'Manual'}</span>

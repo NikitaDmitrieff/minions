@@ -128,8 +128,9 @@ function useTimeScale(branches: Branch[]) {
 
 /* ── Timeline graph ── */
 
-export function TimelineGraph({ branches, onEventClick }: {
+export function TimelineGraph({ branches, githubRepo, onEventClick }: {
   branches: Branch[]
+  githubRepo?: string
   onEventClick: (event: BranchEvent) => void
 }) {
   const [hoveredEvent, setHoveredEvent] = useState<string | null>(null)
@@ -251,18 +252,40 @@ export function TimelineGraph({ branches, onEventClick }: {
               )}
 
               {/* Branch label */}
-              <text
-                x={LEFT_MARGIN - 16}
-                y={laneY + 4}
-                fill={color}
-                fontSize={11}
-                fontWeight={500}
-                fontFamily="'JetBrains Mono', monospace"
-                textAnchor="end"
-                opacity={0.9}
-              >
-                {branch.name.replace('minions/', '')}
-              </text>
+              {githubRepo ? (
+                <a
+                  href={`https://github.com/${githubRepo}/tree/${branch.name}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <text
+                    x={LEFT_MARGIN - 16}
+                    y={laneY + 4}
+                    fill={color}
+                    fontSize={11}
+                    fontWeight={500}
+                    fontFamily="'JetBrains Mono', monospace"
+                    textAnchor="end"
+                    opacity={0.9}
+                    style={{ cursor: 'pointer', textDecoration: 'underline' }}
+                  >
+                    {branch.name.replace('minions/', '')}
+                  </text>
+                </a>
+              ) : (
+                <text
+                  x={LEFT_MARGIN - 16}
+                  y={laneY + 4}
+                  fill={color}
+                  fontSize={11}
+                  fontWeight={500}
+                  fontFamily="'JetBrains Mono', monospace"
+                  textAnchor="end"
+                  opacity={0.9}
+                >
+                  {branch.name.replace('minions/', '')}
+                </text>
+              )}
 
               {/* Lane baseline (subtle) */}
               <line

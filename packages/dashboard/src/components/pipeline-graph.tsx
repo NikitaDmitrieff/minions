@@ -110,7 +110,7 @@ function StageConnector({ left }: { left: StageState }) {
 
 /* ── Branch row ── */
 
-function BranchRow({ branch, onEventClick }: { branch: Branch; onEventClick: (e: BranchEvent) => void }) {
+function BranchRow({ branch, githubRepo, onEventClick }: { branch: Branch; githubRepo?: string; onEventClick: (e: BranchEvent) => void }) {
   const badge = STATE_BADGES[branch.state] || STATE_BADGES.pending
   const stages = STAGES.map(s => ({ ...s, ...resolveStage(branch.events, s) }))
 
@@ -118,9 +118,20 @@ function BranchRow({ branch, onEventClick }: { branch: Branch; onEventClick: (e:
     <div className="glass-card p-5 transition-all duration-200 hover:border-white/[0.12]">
       {/* Header */}
       <div className="mb-5 flex items-center justify-between">
-        <span className="text-[13px] font-medium text-fg font-[family-name:var(--font-mono)]">
-          {branch.name.replace('minions/', '')}
-        </span>
+        {githubRepo ? (
+          <a
+            href={`https://github.com/${githubRepo}/tree/${branch.name}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[13px] font-medium text-accent font-[family-name:var(--font-mono)] transition-colors hover:text-fg"
+          >
+            {branch.name.replace('minions/', '')}
+          </a>
+        ) : (
+          <span className="text-[13px] font-medium text-fg font-[family-name:var(--font-mono)]">
+            {branch.name.replace('minions/', '')}
+          </span>
+        )}
         <div className="flex items-center gap-3">
           <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${badge.color} ${badge.bg}`}>
             {badge.label}
@@ -149,8 +160,9 @@ function BranchRow({ branch, onEventClick }: { branch: Branch; onEventClick: (e:
 
 /* ── Pipeline graph ── */
 
-export function PipelineGraph({ branches, onEventClick }: {
+export function PipelineGraph({ branches, githubRepo, onEventClick }: {
   branches: Branch[]
+  githubRepo?: string
   onEventClick: (event: BranchEvent) => void
 }) {
   if (branches.length === 0) {
@@ -173,7 +185,7 @@ export function PipelineGraph({ branches, onEventClick }: {
   return (
     <div className="space-y-3">
       {sorted.map(branch => (
-        <BranchRow key={branch.name} branch={branch} onEventClick={onEventClick} />
+        <BranchRow key={branch.name} branch={branch} githubRepo={githubRepo} onEventClick={onEventClick} />
       ))}
     </div>
   )

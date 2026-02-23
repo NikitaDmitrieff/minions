@@ -13,7 +13,7 @@ export default async function FindingsPage({
 
   const { data: project } = await supabase
     .from('projects')
-    .select('id, name')
+    .select('id, name, github_repo')
     .eq('id', id)
     .single()
 
@@ -41,6 +41,7 @@ export default async function FindingsPage({
     <div className="mx-auto max-w-6xl px-6 pt-10 pb-16">
       <FindingsPageClient
         projectId={project.id}
+        githubRepo={project.github_repo ?? ''}
         findings={(findings ?? []) as Finding[]}
         snapshots={(snapshots ?? []) as HealthSnapshot[]}
       />

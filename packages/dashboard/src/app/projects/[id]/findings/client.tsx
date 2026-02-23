@@ -1,11 +1,12 @@
 'use client'
 
 import { useState, useMemo } from 'react'
-import { Search, AlertTriangle, CheckCircle2, XCircle, FileCode, ChevronDown, ChevronUp } from 'lucide-react'
+import { Search, AlertTriangle, CheckCircle2, XCircle, FileCode, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react'
 import type { Finding, FindingCategory, FindingSeverity, FindingStatus, HealthSnapshot } from '@/lib/types'
 
 type Props = {
   projectId: string
+  githubRepo?: string
   findings: Finding[]
   snapshots: HealthSnapshot[]
 }
@@ -125,7 +126,7 @@ function HealthSummaryBar({
   )
 }
 
-export function FindingsPageClient({ projectId, findings: initialFindings, snapshots }: Props) {
+export function FindingsPageClient({ projectId, githubRepo, findings: initialFindings, snapshots }: Props) {
   const [findings, setFindings] = useState(initialFindings)
   const [categoryFilter, setCategoryFilter] = useState<FindingCategory | null>(null)
   const [severityFilter, setSeverityFilter] = useState<FindingSeverity | null>(null)
@@ -337,10 +338,23 @@ export function FindingsPageClient({ projectId, findings: initialFindings, snaps
                   {finding.file_path && (
                     <div className="mt-1 flex items-center gap-1.5 text-[11px] text-dim">
                       <FileCode className="h-3 w-3" />
-                      <span className="font-[family-name:var(--font-mono)]">
-                        {finding.file_path}
-                        {finding.line_range && `:${finding.line_range}`}
-                      </span>
+                      {githubRepo ? (
+                        <a
+                          href={`https://github.com/${githubRepo}/blob/main/${finding.file_path}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 font-[family-name:var(--font-mono)] text-accent transition-colors hover:text-fg"
+                        >
+                          {finding.file_path}
+                          {finding.line_range && `:${finding.line_range}`}
+                          <ExternalLink className="h-2.5 w-2.5" />
+                        </a>
+                      ) : (
+                        <span className="font-[family-name:var(--font-mono)]">
+                          {finding.file_path}
+                          {finding.line_range && `:${finding.line_range}`}
+                        </span>
+                      )}
                     </div>
                   )}
                 </button>

@@ -260,7 +260,13 @@ export function PipelineTab({ projectId, githubRepo, proposals: initialProposals
                   {p.branch_name && (
                     <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-dim">
                       <GitBranch className="h-3 w-3" />
-                      {p.branch_name}
+                      {githubRepo ? (
+                        <a href={`https://github.com/${githubRepo}/tree/${p.branch_name}`} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-fg">
+                          {p.branch_name}
+                        </a>
+                      ) : (
+                        p.branch_name
+                      )}
                     </div>
                   )}
                   {run && (
@@ -351,8 +357,22 @@ export function PipelineTab({ projectId, githubRepo, proposals: initialProposals
                   </div>
                   {p.github_issue_number && (
                     <div className="mt-1.5 flex items-center gap-2 text-[11px] text-dim">
-                      <span>Issue #{p.github_issue_number}</span>
-                      {run?.github_pr_number && <span>→ PR #{run.github_pr_number}</span>}
+                      {githubRepo ? (
+                        <a href={`https://github.com/${githubRepo}/issues/${p.github_issue_number}`} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-fg" onClick={e => e.stopPropagation()}>
+                          Issue #{p.github_issue_number}
+                        </a>
+                      ) : (
+                        <span>Issue #{p.github_issue_number}</span>
+                      )}
+                      {run?.github_pr_number && (
+                        githubRepo ? (
+                          <a href={`https://github.com/${githubRepo}/pull/${run.github_pr_number}`} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-fg" onClick={e => e.stopPropagation()}>
+                            → PR #{run.github_pr_number}
+                          </a>
+                        ) : (
+                          <span>→ PR #{run.github_pr_number}</span>
+                        )
+                      )}
                     </div>
                   )}
                 </button>
@@ -434,10 +454,20 @@ export function PipelineTab({ projectId, githubRepo, proposals: initialProposals
                           <div key={cp.id} className="flex items-center gap-3 border-b border-edge/50 px-4 py-3 last:border-b-0">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
-                                <code className="text-[11px] font-medium text-accent">{cp.commit_sha.slice(0, 7)}</code>
-                                {cp.pr_number && (
-                                  <span className="text-[11px] text-muted">PR #{cp.pr_number}</span>
+                                {githubRepo ? (
+                                  <a href={`https://github.com/${githubRepo}/commit/${cp.commit_sha}`} target="_blank" rel="noopener noreferrer" className="text-[11px] font-medium text-accent transition-colors hover:text-fg">
+                                    {cp.commit_sha.slice(0, 7)}
+                                  </a>
+                                ) : (
+                                  <code className="text-[11px] font-medium text-accent">{cp.commit_sha.slice(0, 7)}</code>
                                 )}
+                                {cp.pr_number && githubRepo ? (
+                                  <a href={`https://github.com/${githubRepo}/pull/${cp.pr_number}`} target="_blank" rel="noopener noreferrer" className="text-[11px] text-accent transition-colors hover:text-fg">
+                                    PR #{cp.pr_number}
+                                  </a>
+                                ) : cp.pr_number ? (
+                                  <span className="text-[11px] text-muted">PR #{cp.pr_number}</span>
+                                ) : null}
                                 <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-muted">
                                   {cp.checkpoint_type === 'merge' ? 'merge' : 'cycle'}
                                 </span>
@@ -450,7 +480,13 @@ export function PipelineTab({ projectId, githubRepo, proposals: initialProposals
                               </p>
                             </div>
                             {cp.revert_pr_number ? (
-                              <span className="text-[11px] text-muted">Revert PR #{cp.revert_pr_number}</span>
+                              githubRepo ? (
+                                <a href={`https://github.com/${githubRepo}/pull/${cp.revert_pr_number}`} target="_blank" rel="noopener noreferrer" className="text-[11px] text-accent transition-colors hover:text-fg">
+                                  Revert PR #{cp.revert_pr_number}
+                                </a>
+                              ) : (
+                                <span className="text-[11px] text-muted">Revert PR #{cp.revert_pr_number}</span>
+                              )
                             ) : (
                               <button
                                 onClick={() => handleRevert(cp.id)}

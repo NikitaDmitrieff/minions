@@ -27,7 +27,7 @@ const VIEW_TABS: { id: GraphView; label: string; Icon: typeof GitBranch }[] = [
   { id: 'timeline', label: 'Timeline', Icon: Clock },
 ]
 
-export function GraphPageClient({ projectId }: { projectId: string }) {
+export function GraphPageClient({ projectId, githubRepo }: { projectId: string; githubRepo: string }) {
   const [selectedEvent, setSelectedEvent] = useState<BranchEvent | null>(null)
   const [view, setView] = useState<GraphView>('pipeline')
   const [data, setData] = useState<GraphData | null>(null)
@@ -63,11 +63,11 @@ export function GraphPageClient({ projectId }: { projectId: string }) {
 
     switch (view) {
       case 'pipeline':
-        return <PipelineGraph branches={data.branches} onEventClick={setSelectedEvent} />
+        return <PipelineGraph branches={data.branches} githubRepo={githubRepo} onEventClick={setSelectedEvent} />
       case 'git':
-        return <GitGraph branches={data.branches} onEventClick={setSelectedEvent} />
+        return <GitGraph branches={data.branches} githubRepo={githubRepo} onEventClick={setSelectedEvent} />
       case 'timeline':
-        return <TimelineGraph branches={data.branches} onEventClick={setSelectedEvent} />
+        return <TimelineGraph branches={data.branches} githubRepo={githubRepo} onEventClick={setSelectedEvent} />
     }
   }
 
@@ -105,6 +105,7 @@ export function GraphPageClient({ projectId }: { projectId: string }) {
       {selectedEvent && (
         <EventSlideOver
           event={selectedEvent}
+          githubRepo={githubRepo}
           onClose={() => setSelectedEvent(null)}
         />
       )}

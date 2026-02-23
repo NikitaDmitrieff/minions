@@ -223,8 +223,9 @@ function laneToY(lane: number): number {
 
 /* ── Git graph ── */
 
-export function GitGraph({ branches, onEventClick }: {
+export function GitGraph({ branches, githubRepo, onEventClick }: {
   branches: Branch[]
+  githubRepo?: string
   onEventClick: (event: BranchEvent) => void
 }) {
   const [hoveredEvent, setHoveredEvent] = useState<string | null>(null)
@@ -408,18 +409,39 @@ export function GitGraph({ branches, onEventClick }: {
               )}
 
               {/* Branch label */}
-              <text
-                x={firstX + 8}
-                y={branchY - 24}
-                fill={color}
-                fontSize={11}
-                fontWeight={500}
-                fontFamily="'JetBrains Mono', monospace"
-                opacity={branchHovered ? 1 : 0.8}
-                style={{ transition: 'opacity 0.2s' }}
-              >
-                {branch.name.replace('minions/', '')}
-              </text>
+              {githubRepo ? (
+                <a
+                  href={`https://github.com/${githubRepo}/tree/${branch.name}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <text
+                    x={firstX + 8}
+                    y={branchY - 24}
+                    fill={color}
+                    fontSize={11}
+                    fontWeight={500}
+                    fontFamily="'JetBrains Mono', monospace"
+                    opacity={branchHovered ? 1 : 0.8}
+                    style={{ transition: 'opacity 0.2s', cursor: 'pointer', textDecoration: 'underline' }}
+                  >
+                    {branch.name.replace('minions/', '')}
+                  </text>
+                </a>
+              ) : (
+                <text
+                  x={firstX + 8}
+                  y={branchY - 24}
+                  fill={color}
+                  fontSize={11}
+                  fontWeight={500}
+                  fontFamily="'JetBrains Mono', monospace"
+                  opacity={branchHovered ? 1 : 0.8}
+                  style={{ transition: 'opacity 0.2s' }}
+                >
+                  {branch.name.replace('minions/', '')}
+                </text>
+              )}
 
               {/* State label */}
               <text

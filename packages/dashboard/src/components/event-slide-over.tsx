@@ -27,6 +27,7 @@ import type { BranchEvent } from '@/lib/types'
 
 type Props = {
   event: BranchEvent
+  githubRepo?: string
   onClose: () => void
 }
 
@@ -65,11 +66,29 @@ const EVENT_TYPE_CONFIG: Record<string, { icon: typeof Search; label: string; co
 
 /* ── Shared UI helpers ── */
 
-function ShaLabel({ sha }: { sha: string }) {
-  return (
-    <span className="inline-flex items-center gap-1 rounded bg-surface px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[11px] text-fg">
+function ShaLabel({ sha, githubRepo }: { sha: string; githubRepo?: string }) {
+  const inner = (
+    <>
       <GitCommit className="h-3 w-3 text-muted" />
       {sha.slice(0, 8)}
+    </>
+  )
+  if (githubRepo) {
+    return (
+      <a
+        href={`https://github.com/${githubRepo}/commit/${sha}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1 rounded bg-surface px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[11px] text-accent transition-colors hover:bg-surface-hover"
+      >
+        {inner}
+        <ExternalLink className="ml-0.5 h-2.5 w-2.5" />
+      </a>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded bg-surface px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[11px] text-fg">
+      {inner}
     </span>
   )
 }
@@ -111,7 +130,7 @@ function KeyValue({ label, value }: { label: string; value: React.ReactNode }) {
 
 /* ── Event-specific content ── */
 
-function ScoutFindingContent({ data }: { data: Record<string, unknown> }) {
+function ScoutFindingContent({ data, githubRepo }: { data: Record<string, unknown>; githubRepo?: string }) {
   const severity = data.severity as string | undefined
   const category = data.category as string | undefined
   const filePath = data.file_path as string | undefined
@@ -143,10 +162,23 @@ function ScoutFindingContent({ data }: { data: Record<string, unknown> }) {
       )}
       {filePath && (
         <Section label="File">
-          <div className="flex items-center gap-2 rounded-lg bg-surface px-3 py-2.5">
-            <FileCode className="h-3.5 w-3.5 shrink-0 text-muted" />
-            <span className="font-[family-name:var(--font-mono)] text-sm text-fg">{filePath}</span>
-          </div>
+          {githubRepo ? (
+            <a
+              href={`https://github.com/${githubRepo}/blob/main/${filePath}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 rounded-lg bg-surface px-3 py-2.5 text-sm text-accent transition-colors hover:bg-surface-hover"
+            >
+              <FileCode className="h-3.5 w-3.5 shrink-0" />
+              <span className="font-[family-name:var(--font-mono)]">{filePath}</span>
+              <ExternalLink className="ml-auto h-3 w-3 shrink-0 text-muted" />
+            </a>
+          ) : (
+            <div className="flex items-center gap-2 rounded-lg bg-surface px-3 py-2.5">
+              <FileCode className="h-3.5 w-3.5 shrink-0 text-muted" />
+              <span className="font-[family-name:var(--font-mono)] text-sm text-fg">{filePath}</span>
+            </div>
+          )}
         </Section>
       )}
       {(totalFindings != null || newFindings != null || filesScanned != null) && (
@@ -252,7 +284,7 @@ function AutoApprovedContent({ data }: { data: Record<string, unknown> }) {
   )
 }
 
-function BuildContent({ data, eventType }: { data: Record<string, unknown>; eventType: string }) {
+function BuildContent({ data, eventType, githubRepo }: { data: Record<string, unknown>; eventType: string; githubRepo?: string }) {
   const diffStats = data.diff_stats as string | undefined
   const error = data.error as string | undefined
   const stage = data.stage as string | undefined
@@ -313,14 +345,14 @@ function BuildContent({ data, eventType }: { data: Record<string, unknown>; even
       {headSha && (
         <div className="flex items-center gap-2 text-xs text-muted">
           <span>HEAD:</span>
-          <ShaLabel sha={headSha} />
+          <ShaLabel sha={headSha} githubRepo={githubRepo} />
         </div>
       )}
     </div>
   )
 }
 
-function ReviewContent({ data, eventType }: { data: Record<string, unknown>; eventType: string }) {
+function ReviewContent({ data, eventType, githubRepo }: { data: Record<string, unknown>; eventType: string; githubRepo?: string }) {
   const comments = data.comments as string[] | undefined
   const riskLevel = data.risk_level as string | undefined
   const riskFiles = data.risk_files as string[] | undefined
@@ -414,14 +446,14 @@ function ReviewContent({ data, eventType }: { data: Record<string, unknown>; eve
       {headSha && (
         <div className="flex items-center gap-2 text-xs text-muted">
           <span>HEAD:</span>
-          <ShaLabel sha={headSha} />
+          <ShaLabel sha={headSha} githubRepo={githubRepo} />
         </div>
       )}
     </div>
   )
 }
 
-function PRContent({ data }: { data: Record<string, unknown> }) {
+function PRContent({ data, githubRepo }: { data: Record<string, unknown>; githubRepo?: string }) {
   const prNumber = data.pr_number as number | undefined
   const prUrl = data.pr_url as string | undefined
   const headSha = data.head_sha as string | undefined
@@ -441,13 +473,13 @@ function PRContent({ data }: { data: Record<string, unknown> }) {
         {headSha && (
           <div className="flex items-center gap-2 text-xs text-muted">
             <span>HEAD:</span>
-            <ShaLabel sha={headSha} />
+            <ShaLabel sha={headSha} githubRepo={githubRepo} />
           </div>
         )}
         {mergeSha && (
           <div className="flex items-center gap-2 text-xs text-muted">
             <span>Merge:</span>
-            <ShaLabel sha={mergeSha} />
+            <ShaLabel sha={mergeSha} githubRepo={githubRepo} />
           </div>
         )}
       </div>
@@ -455,7 +487,7 @@ function PRContent({ data }: { data: Record<string, unknown> }) {
   )
 }
 
-function AutoMergedContent({ data }: { data: Record<string, unknown> }) {
+function AutoMergedContent({ data, githubRepo }: { data: Record<string, unknown>; githubRepo?: string }) {
   const prNumber = data.pr_number as number | undefined
   const mergeSha = data.merge_sha as string | undefined
 
@@ -472,14 +504,14 @@ function AutoMergedContent({ data }: { data: Record<string, unknown> }) {
       {mergeSha && (
         <div className="flex items-center gap-2 text-xs text-muted">
           <span>Merge SHA:</span>
-          <ShaLabel sha={mergeSha} />
+          <ShaLabel sha={mergeSha} githubRepo={githubRepo} />
         </div>
       )}
     </div>
   )
 }
 
-function MergeFailedContent({ data }: { data: Record<string, unknown> }) {
+function MergeFailedContent({ data, githubRepo }: { data: Record<string, unknown>; githubRepo?: string }) {
   const reason = data.reason as string | undefined
   const prNumber = data.pr_number as number | undefined
   const expected = data.expected as string | undefined
@@ -498,13 +530,13 @@ function MergeFailedContent({ data }: { data: Record<string, unknown> }) {
             {expected && (
               <div className="flex items-center gap-2 text-xs text-muted">
                 <span>Expected:</span>
-                <ShaLabel sha={expected} />
+                <ShaLabel sha={expected} githubRepo={githubRepo} />
               </div>
             )}
             {actual && (
               <div className="flex items-center gap-2 text-xs text-muted">
                 <span>Actual:</span>
-                <ShaLabel sha={actual} />
+                <ShaLabel sha={actual} githubRepo={githubRepo} />
               </div>
             )}
           </div>
@@ -540,7 +572,7 @@ function CycleContent({ data, eventType }: { data: Record<string, unknown>; even
   )
 }
 
-function CheckpointContent({ data, eventType }: { data: Record<string, unknown>; eventType: string }) {
+function CheckpointContent({ data, eventType, githubRepo }: { data: Record<string, unknown>; eventType: string; githubRepo?: string }) {
   const checkpointType = data.checkpoint_type as string | undefined
   const commitSha = data.commit_sha as string | undefined
   const prNumber = data.pr_number as number | undefined
@@ -563,7 +595,7 @@ function CheckpointContent({ data, eventType }: { data: Record<string, unknown>;
       {commitSha && (
         <div className="flex items-center gap-2 text-xs text-muted">
           <span>Commit:</span>
-          <ShaLabel sha={commitSha} />
+          <ShaLabel sha={commitSha} githubRepo={githubRepo} />
         </div>
       )}
     </div>
@@ -611,12 +643,12 @@ function FallbackContent({ data }: { data: Record<string, unknown> }) {
   )
 }
 
-function renderEventContent(event: BranchEvent) {
+function renderEventContent(event: BranchEvent, githubRepo?: string) {
   const data = event.event_data
 
   switch (event.event_type) {
     case 'scout_finding':
-      return <ScoutFindingContent data={data} />
+      return <ScoutFindingContent data={data} githubRepo={githubRepo} />
     case 'proposal_created':
     case 'proposal_approved':
     case 'proposal_rejected':
@@ -627,24 +659,24 @@ function renderEventContent(event: BranchEvent) {
     case 'build_completed':
     case 'build_failed':
     case 'build_remediation':
-      return <BuildContent data={data} eventType={event.event_type} />
+      return <BuildContent data={data} eventType={event.event_type} githubRepo={githubRepo} />
     case 'review_started':
     case 'review_approved':
     case 'review_rejected':
-      return <ReviewContent data={data} eventType={event.event_type} />
+      return <ReviewContent data={data} eventType={event.event_type} githubRepo={githubRepo} />
     case 'pr_created':
     case 'pr_merged':
-      return <PRContent data={data} />
+      return <PRContent data={data} githubRepo={githubRepo} />
     case 'auto_merged':
-      return <AutoMergedContent data={data} />
+      return <AutoMergedContent data={data} githubRepo={githubRepo} />
     case 'merge_failed':
-      return <MergeFailedContent data={data} />
+      return <MergeFailedContent data={data} githubRepo={githubRepo} />
     case 'cycle_started':
     case 'cycle_completed':
       return <CycleContent data={data} eventType={event.event_type} />
     case 'checkpoint_created':
     case 'checkpoint_reverted':
-      return <CheckpointContent data={data} eventType={event.event_type} />
+      return <CheckpointContent data={data} eventType={event.event_type} githubRepo={githubRepo} />
     case 'deploy_preview':
     case 'deploy_production':
       return <DeployContent data={data} eventType={event.event_type} />
@@ -653,7 +685,7 @@ function renderEventContent(event: BranchEvent) {
   }
 }
 
-export function EventSlideOver({ event, onClose }: Props) {
+export function EventSlideOver({ event, githubRepo, onClose }: Props) {
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -700,7 +732,18 @@ export function EventSlideOver({ event, onClose }: Props) {
           {event.branch_name && (
             <div className="mb-4 flex items-center gap-2 text-xs text-muted">
               <GitPullRequest className="h-3 w-3" />
-              <span className="font-[family-name:var(--font-mono)]">{event.branch_name}</span>
+              {githubRepo ? (
+                <a
+                  href={`https://github.com/${githubRepo}/tree/${event.branch_name}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-[family-name:var(--font-mono)] text-accent transition-colors hover:text-fg"
+                >
+                  {event.branch_name}
+                </a>
+              ) : (
+                <span className="font-[family-name:var(--font-mono)]">{event.branch_name}</span>
+              )}
             </div>
           )}
 
@@ -708,7 +751,7 @@ export function EventSlideOver({ event, onClose }: Props) {
           {event.commit_sha && (
             <div className="mb-4 flex items-center gap-2 text-xs text-muted">
               <span>SHA:</span>
-              <ShaLabel sha={event.commit_sha} />
+              <ShaLabel sha={event.commit_sha} githubRepo={githubRepo} />
             </div>
           )}
 
@@ -719,7 +762,7 @@ export function EventSlideOver({ event, onClose }: Props) {
           </div>
 
           {/* Event-specific content */}
-          {renderEventContent(event)}
+          {renderEventContent(event, githubRepo)}
 
           {/* Timestamp */}
           <div className="mt-6 text-xs text-muted">

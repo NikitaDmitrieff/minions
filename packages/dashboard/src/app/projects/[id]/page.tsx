@@ -27,16 +27,21 @@ export default async function ProjectPage({
         <div>
           <h1 className="text-lg font-medium text-fg">{project.name}</h1>
           {project.github_repo && (
-            <div className="mt-1.5 flex items-center gap-2 text-xs text-muted">
+            <a
+              href={`https://github.com/${project.github_repo}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-1.5 flex items-center gap-2 text-xs text-muted transition-colors hover:text-fg"
+            >
               <Github className="h-3 w-3" />
               {project.github_repo}
-            </div>
+            </a>
           )}
         </div>
         <DeleteProjectButton projectId={project.id} />
       </div>
 
-      <GraphPageClient projectId={project.id} />
+      <GraphPageClient projectId={project.id} githubRepo={project.github_repo ?? ''} />
     </div>
   )
 }
