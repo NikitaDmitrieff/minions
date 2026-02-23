@@ -19,6 +19,8 @@ const MAX_ATTEMPTS = 3
 const MAX_BACKOFF_MS = 60_000
 const WORKER_ID = `worker-${process.pid}-${Date.now()}`
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL ?? ''
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN ?? ''
+const SLACK_CHANNEL_ID = process.env.SLACK_CHANNEL_ID ?? ''
 
 const DASHBOARD_BASE = 'https://minions-dashboard.vercel.app'
 
@@ -34,9 +36,51 @@ function dashboardLink(projectId: string, page = 'kanban'): string {
   return `<${DASHBOARD_BASE}/projects/${projectId}/${page}|Dashboard>`
 }
 
-/** Fire-and-forget Slack notification for pipeline events. */
-async function notifySlack(message: string): Promise<void> {
-  if (!SLACK_WEBHOOK_URL) return
+// ── Thread tracking: one thread per proposal ─────────────────────────────────
+const proposalThreads = new Map<string, string>()  // proposalId → Slack message ts
+
+/**
+ * Send a Slack message. If SLACK_BOT_TOKEN is set, uses the Web API
+ * (supports threads). Falls back to incoming webhook (no threads).
+ * Returns the message ts (only with bot token).
+ */
+async function notifySlack(message: string, threadKey?: string): Promise<string | undefined> {
+  // Look up thread_ts for this proposal
+  const threadTs = threadKey ? proposalThreads.get(threadKey) : undefined
+
+  // Prefer Web API if bot token is available (supports threads + returns ts)
+  if (SLACK_BOT_TOKEN && SLACK_CHANNEL_ID) {
+    try {
+      const body: Record<string, unknown> = {
+        channel: SLACK_CHANNEL_ID,
+        text: message,
+        unfurl_links: true,
+      }
+      if (threadTs) body.thread_ts = threadTs
+
+      const res = await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+        },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json() as { ok?: boolean; ts?: string }
+      if (data.ok && data.ts) {
+        // Store thread ts for the first message about this proposal
+        if (threadKey && !threadTs) {
+          proposalThreads.set(threadKey, data.ts)
+        }
+        return data.ts
+      }
+    } catch {
+      // Fall through to webhook
+    }
+  }
+
+  // Fallback: incoming webhook (no thread support)
+  if (!SLACK_WEBHOOK_URL) return undefined
   try {
     await fetch(SLACK_WEBHOOK_URL, {
       method: 'POST',
@@ -46,6 +90,51 @@ async function notifySlack(message: string): Promise<void> {
   } catch {
     // Don't let Slack failures break the pipeline
   }
+  return undefined
+}
+
+/**
+ * Fetch the Vercel preview URL for a PR branch via GitHub Deployments API.
+ * Polls up to 3 times with 20s delay. Returns null if no deployment found.
+ */
+async function fetchVercelPreviewUrl(
+  repo: string, branchName: string, token: string,
+): Promise<string | null> {
+  const [owner, repoName] = repo.split('/')
+  const maxAttempts = 3
+  const delayMs = 20_000
+
+  for (let i = 0; i < maxAttempts; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, delayMs))
+
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repoName}/deployments?ref=${branchName}&per_page=5`,
+        { headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github+json' } },
+      )
+      const deployments = await res.json() as Array<{ id: number; environment: string }>
+      const preview = deployments?.find(d =>
+        d.environment === 'Preview' || d.environment === 'preview' || d.environment?.includes('Preview'),
+      )
+
+      if (!preview) continue
+
+      const statusRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repoName}/deployments/${preview.id}/statuses?per_page=5`,
+        { headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github+json' } },
+      )
+      const statuses = await statusRes.json() as Array<{ state: string; target_url?: string; environment_url?: string }>
+      const success = statuses?.find(s => s.state === 'success')
+
+      if (success) {
+        return success.environment_url || success.target_url || null
+      }
+    } catch {
+      // Ignore fetch errors, keep polling
+    }
+  }
+
+  return null
 }
 
 async function reapStaleJobs(supabase: Supabase) {
@@ -409,7 +498,7 @@ async function processJob(supabase: Supabase, job: {
         actor: 'builder',
       })
 
-      await notifySlack(`🔨 *Build started*\n> _${payload.title || job.issue_title}_\nBranch: \`${payload.branch_name}\`${ghRepo ? ' · ' + ghRepoLink(ghRepo) : ''}`)
+      await notifySlack(`🔨 *Build started*\n> _${payload.title || job.issue_title}_\nBranch: \`${payload.branch_name}\`${ghRepo ? ' · ' + ghRepoLink(ghRepo) : ''}`, payload.proposal_id)
 
       const result = await runBuilderJob({
         jobId: job.id,
@@ -430,6 +519,24 @@ async function processJob(supabase: Supabase, job: {
 
       // Auto-trigger reviewer after builder completes with a PR
       if (result.prNumber && result.headSha) {
+        // Notify PR created in thread
+        await notifySlack(
+          `📦 *PR created* ${ghRepo ? ghPrLink(ghRepo, result.prNumber) : `PR #${result.prNumber}`}\nReview queued...`,
+          payload.proposal_id,
+        )
+
+        // Fetch Vercel preview URL in background (don't block the pipeline)
+        if (ghRepo) {
+          const github = await fetchGithubConfig(supabase, job.project_id)
+          fetchVercelPreviewUrl(ghRepo, payload.branch_name, github.token)
+            .then(previewUrl => {
+              if (previewUrl) {
+                notifySlack(`🌐 *Preview ready*\n<${previewUrl}|${previewUrl}>`, payload.proposal_id)
+              }
+            })
+            .catch(() => { /* ignore preview fetch errors */ })
+        }
+
         console.log(`[${WORKER_ID}] Build complete, auto-triggering review for PR #${result.prNumber}`)
         await supabase.from('job_queue').insert({
           project_id: job.project_id,
@@ -447,7 +554,7 @@ async function processJob(supabase: Supabase, job: {
       } else {
         // Builder produced no changes — reject proposal and move on
         console.log(`[${WORKER_ID}] Build produced no changes — rejecting proposal ${payload.proposal_id}`)
-        await notifySlack(`⚠️ *Build produced no changes* — proposal rejected\n> _${payload.title || job.issue_title}_\n${dashboardLink(job.project_id, 'kanban')}`)
+        await notifySlack(`⚠️ *Build produced no changes* — proposal rejected\n> _${payload.title || job.issue_title}_\n${dashboardLink(job.project_id, 'kanban')}`, payload.proposal_id)
 
         await supabase.from('proposals')
           .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Builder produced no code changes' })
@@ -496,7 +603,7 @@ async function processJob(supabase: Supabase, job: {
         // Try auto-merge if in automate mode
         if (await shouldAutoMerge(supabase, job.project_id)) {
           console.log(`[${WORKER_ID}] Review approved — attempting auto-merge for PR #${payload.pr_number}`)
-          await notifySlack(`✅ *Review approved* — auto-merging ${ghRepo ? ghPrLink(ghRepo, payload.pr_number!) : `PR #${payload.pr_number}`}`)
+          await notifySlack(`✅ *Review approved* — auto-merging ${ghRepo ? ghPrLink(ghRepo, payload.pr_number!) : `PR #${payload.pr_number}`}`, payload.proposal_id)
           await autoMergePR(supabase, job.project_id, {
             proposal_id: payload.proposal_id!,
             pr_number: payload.pr_number!,
@@ -532,7 +639,7 @@ async function processJob(supabase: Supabase, job: {
         if (attempt < 1) {
           // First rejection → queue fix-build to address reviewer concerns
           console.log(`[${WORKER_ID}] Review rejected — queuing fix-build for PR #${payload.pr_number} (attempt ${attempt + 1})`)
-          await notifySlack(`🔧 *Review rejected* ${ghRepo ? ghPrLink(ghRepo, payload.pr_number!) : `PR #${payload.pr_number}`} — spawning fix-build\n${reviewResult.summary ? `> ${reviewResult.summary.slice(0, 200)}` : ''}`)
+          await notifySlack(`🔧 *Review rejected* ${ghRepo ? ghPrLink(ghRepo, payload.pr_number!) : `PR #${payload.pr_number}`} — spawning fix-build\n${reviewResult.summary ? `> ${reviewResult.summary.slice(0, 200)}` : ''}`, payload.proposal_id)
 
           await supabase.from('branch_events').insert({
             project_id: job.project_id,
@@ -567,7 +674,7 @@ async function processJob(supabase: Supabase, job: {
         } else {
           // Already retried — reject permanently
           console.log(`[${WORKER_ID}] Review rejected after fix attempt — permanently rejecting proposal ${payload.proposal_id}`)
-          await notifySlack(`❌ *Permanently rejected* ${ghRepo ? ghPrLink(ghRepo, payload.pr_number!) : `PR #${payload.pr_number}`} — fix attempt failed\n${dashboardLink(job.project_id, 'kanban')}`)
+          await notifySlack(`❌ *Permanently rejected* ${ghRepo ? ghPrLink(ghRepo, payload.pr_number!) : `PR #${payload.pr_number}`} — fix attempt failed\n${dashboardLink(job.project_id, 'kanban')}`, payload.proposal_id)
 
           await supabase.from('proposals')
             .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Reviewer requested changes (fix attempt failed)' })
@@ -597,7 +704,7 @@ async function processJob(supabase: Supabase, job: {
         throw new Error('Fix-build job missing required payload fields')
       }
 
-      await notifySlack(`🔧 *Fix-build started* — addressing review on ${ghRepo ? ghPrLink(ghRepo, fixPayload.pr_number) : `PR #${fixPayload.pr_number}`}\n${(fixPayload.review_concerns || []).length} concern${(fixPayload.review_concerns || []).length !== 1 ? 's' : ''} to fix`)
+      await notifySlack(`🔧 *Fix-build started* — addressing review on ${ghRepo ? ghPrLink(ghRepo, fixPayload.pr_number) : `PR #${fixPayload.pr_number}`}\n${(fixPayload.review_concerns || []).length} concern${(fixPayload.review_concerns || []).length !== 1 ? 's' : ''} to fix`, fixPayload.proposal_id)
 
       const result = await runFixBuildJob({
         jobId: job.id,
@@ -630,7 +737,7 @@ async function processJob(supabase: Supabase, job: {
       } else {
         // Fix produced no changes — reject proposal
         console.log(`[${WORKER_ID}] Fix-build produced no changes — rejecting proposal`)
-        await notifySlack(`⚠️ *Fix-build produced no changes* ${ghRepo ? ghPrLink(ghRepo, fixPayload.pr_number) : `PR #${fixPayload.pr_number}`} — proposal rejected\n${dashboardLink(job.project_id, 'kanban')}`)
+        await notifySlack(`⚠️ *Fix-build produced no changes* ${ghRepo ? ghPrLink(ghRepo, fixPayload.pr_number) : `PR #${fixPayload.pr_number}`} — proposal rejected\n${dashboardLink(job.project_id, 'kanban')}`, fixPayload.proposal_id)
         await supabase.from('proposals')
           .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Fix-build produced no changes after review rejection' })
           .eq('id', fixPayload.proposal_id)
