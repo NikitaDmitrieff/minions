@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import type { BranchEvent, Branch, BranchState } from '@/lib/types'
 
 /* ── Color maps ── */
@@ -22,6 +22,13 @@ const EVENT_COLORS: Record<string, string> = {
   deploy_preview:     '#8b5cf6',
   deploy_production:  '#22c55e',
   branch_deleted:     '#6b7280',
+  auto_approved:      '#22c55e',
+  auto_merged:        '#22c55e',
+  merge_failed:       '#ef4444',
+  cycle_started:      '#3b82f6',
+  cycle_completed:    '#22c55e',
+  checkpoint_created: '#8b5cf6',
+  checkpoint_reverted:'#f59e0b',
 }
 
 const EVENT_LABELS: Record<string, string> = {
@@ -41,6 +48,13 @@ const EVENT_LABELS: Record<string, string> = {
   deploy_preview:     'Preview',
   deploy_production:  'Shipped',
   branch_deleted:     'Deleted',
+  auto_approved:      'Auto-approved',
+  auto_merged:        'Merged',
+  merge_failed:       'Merge Failed',
+  cycle_started:      'Cycle Start',
+  cycle_completed:    'Cycle Done',
+  checkpoint_created: 'Checkpoint',
+  checkpoint_reverted:'Reverted',
 }
 
 const EVENT_ABBREVS: Record<string, string> = {
@@ -49,6 +63,9 @@ const EVENT_ABBREVS: Record<string, string> = {
   review_started: 'R', review_approved: 'A', review_rejected: 'R',
   pr_created: 'PR', pr_merged: 'M',
   deploy_preview: 'D', deploy_production: 'D', branch_deleted: 'X',
+  auto_approved: '?', auto_merged: 'M', merge_failed: 'X',
+  cycle_started: '?', cycle_completed: '?',
+  checkpoint_created: '?', checkpoint_reverted: '?',
 }
 
 const STATE_COLORS: Record<BranchState, string> = {
@@ -67,13 +84,142 @@ const STATE_LABELS: Record<BranchState, string> = {
   merged: 'Merged', rejected: 'Rejected', failed: 'Failed', deployed: 'Deployed', pending: 'Pending',
 }
 
+const TERMINAL_STATES = new Set<BranchState>(['merged', 'rejected', 'failed', 'deployed'])
+
 /* ── Layout constants ── */
 const MAIN_Y = 50
-const BRANCH_START_X = 140
-const BRANCH_SPACING_Y = 110
-const NODE_SPACING_X = 90
+const LANE_SPACING_Y = 120
+const COL_SPACING_X = 80
+const LEFT_PAD = 60
 const NODE_R = 14
-const MAIN_NODE_R = 5
+const FORK_DOT_R = 5
+
+/* ── Layout computation ── */
+
+type PositionedEvent = {
+  event: BranchEvent
+  col: number
+  branchName: string
+}
+
+type LaneAssignment = {
+  branch: Branch
+  lane: number
+  forkCol: number      // column on main line where fork originates
+  mergeCol: number     // column on main line where merge lands (-1 if not merged)
+  firstCol: number     // column of branch's first event
+  lastCol: number      // column of branch's last event
+}
+
+function computeLayout(branches: Branch[]) {
+  const mainBranch = branches.find(b => b.name === 'main')
+  const featureBranches = branches.filter(b => b.name !== 'main')
+
+  // 1. Build global timeline: all events sorted by created_at
+  const allEvents: PositionedEvent[] = []
+
+  if (mainBranch) {
+    for (const event of mainBranch.events) {
+      allEvents.push({ event, col: 0, branchName: 'main' })
+    }
+  }
+  for (const branch of featureBranches) {
+    for (const event of branch.events) {
+      allEvents.push({ event, col: 0, branchName: branch.name })
+    }
+  }
+
+  // Sort by timestamp, then by branch (main first for tie-breaking)
+  allEvents.sort((a, b) => {
+    const timeDiff = new Date(a.event.created_at).getTime() - new Date(b.event.created_at).getTime()
+    if (timeDiff !== 0) return timeDiff
+    // Main events first when same timestamp
+    if (a.branchName === 'main' && b.branchName !== 'main') return -1
+    if (a.branchName !== 'main' && b.branchName === 'main') return 1
+    return 0
+  })
+
+  // Assign column indices
+  const eventColMap = new Map<string, number>()
+  allEvents.forEach((item, i) => {
+    item.col = i
+    eventColMap.set(item.event.id, i)
+  })
+
+  // 2. Compute main event positions
+  const mainEvents: PositionedEvent[] = allEvents.filter(e => e.branchName === 'main')
+
+  // 3. Assign lanes to feature branches (greedy reuse)
+  // Sort by first event timestamp
+  const sortedFeatures = [...featureBranches].sort((a, b) => {
+    const aFirst = a.events[0]?.created_at || ''
+    const bFirst = b.events[0]?.created_at || ''
+    return aFirst.localeCompare(bFirst)
+  })
+
+  // Track when each lane becomes free (by column index)
+  const laneFreeAt: number[] = [] // laneFreeAt[lane] = column after which lane is free
+
+  const laneAssignments: LaneAssignment[] = []
+
+  for (const branch of sortedFeatures) {
+    if (branch.events.length === 0) continue
+
+    const firstEventCol = eventColMap.get(branch.events[0].id) ?? 0
+    const lastEventCol = eventColMap.get(branch.events[branch.events.length - 1].id) ?? 0
+
+    // Find lowest available lane
+    let assignedLane = -1
+    for (let l = 0; l < laneFreeAt.length; l++) {
+      if (laneFreeAt[l] < firstEventCol) {
+        assignedLane = l
+        break
+      }
+    }
+    if (assignedLane === -1) {
+      assignedLane = laneFreeAt.length
+      laneFreeAt.push(-1)
+    }
+
+    // Mark lane as occupied until branch ends
+    laneFreeAt[assignedLane] = lastEventCol
+
+    // Find fork origin: closest preceding main event
+    let forkCol = firstEventCol
+    for (let i = mainEvents.length - 1; i >= 0; i--) {
+      if (mainEvents[i].col <= firstEventCol) {
+        forkCol = mainEvents[i].col
+        break
+      }
+    }
+
+    // Merge column: for merged branches, last event col
+    const isMerged = TERMINAL_STATES.has(branch.state) && branch.state === 'merged'
+    const mergeCol = isMerged ? lastEventCol : -1
+
+    laneAssignments.push({
+      branch,
+      lane: assignedLane,
+      forkCol,
+      mergeCol,
+      firstCol: firstEventCol,
+      lastCol: lastEventCol,
+    })
+  }
+
+  const totalCols = allEvents.length
+  const totalLanes = laneFreeAt.length
+
+  return { mainEvents, laneAssignments, eventColMap, totalCols, totalLanes }
+}
+
+function colToX(col: number): number {
+  return LEFT_PAD + col * COL_SPACING_X
+}
+
+function laneToY(lane: number): number {
+  return MAIN_Y + (lane + 1) * LANE_SPACING_Y
+}
 
 /* ── Git graph ── */
 
@@ -84,6 +230,8 @@ export function GitGraph({ branches, onEventClick }: {
   const [hoveredEvent, setHoveredEvent] = useState<string | null>(null)
   const [hoveredBranch, setHoveredBranch] = useState<string | null>(null)
 
+  const layout = useMemo(() => computeLayout(branches), [branches])
+
   if (branches.length === 0) {
     return (
       <div className="glass-card p-8 text-center text-muted">
@@ -92,16 +240,14 @@ export function GitGraph({ branches, onEventClick }: {
     )
   }
 
-  const width = Math.max(900, branches.reduce((max, b) =>
-    Math.max(max, BRANCH_START_X + (b.events.length + 1) * NODE_SPACING_X + 140), 0
-  ))
-  const height = MAIN_Y + (branches.length + 1) * BRANCH_SPACING_Y
+  const { mainEvents, laneAssignments, eventColMap, totalCols, totalLanes } = layout
+  const width = Math.max(900, colToX(totalCols) + 100)
+  const height = MAIN_Y + (totalLanes + 1) * LANE_SPACING_Y + 40
 
   return (
     <div className="glass-card overflow-x-auto">
       <svg width={width} height={height} className="min-w-full">
         <defs>
-          {/* Glow filter for hovered nodes */}
           <filter id="node-glow" x="-100%" y="-100%" width="300%" height="300%">
             <feGaussianBlur stdDeviation="4" result="blur" />
             <feMerge>
@@ -109,7 +255,6 @@ export function GitGraph({ branches, onEventClick }: {
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
-          {/* Softer glow for branch lines */}
           <filter id="line-glow" x="-20%" y="-50%" width="140%" height="200%">
             <feGaussianBlur stdDeviation="2" result="blur" />
             <feMerge>
@@ -119,19 +264,17 @@ export function GitGraph({ branches, onEventClick }: {
           </filter>
         </defs>
 
-        {/* Main branch line */}
+        {/* ── Main branch line ── */}
         <line
           x1={0} y1={MAIN_Y} x2={width} y2={MAIN_Y}
           stroke="rgba(255,255,255,0.12)"
           strokeWidth={3}
         />
-        {/* Main branch glow line (subtle) */}
         <line
           x1={0} y1={MAIN_Y} x2={width} y2={MAIN_Y}
           stroke="rgba(255,255,255,0.04)"
           strokeWidth={8}
         />
-        {/* Main label */}
         <text
           x={20} y={MAIN_Y - 18}
           fill="#e8eaed"
@@ -143,16 +286,76 @@ export function GitGraph({ branches, onEventClick }: {
           main
         </text>
 
-        {/* Branches */}
-        {branches.map((branch, bi) => {
-          const branchY = MAIN_Y + (bi + 1) * BRANCH_SPACING_Y
-          const forkX = BRANCH_START_X + bi * 50
+        {/* ── Main branch event nodes ── */}
+        {mainEvents.map(({ event, col }) => {
+          const x = colToX(col)
+          const eventColor = EVENT_COLORS[event.event_type] || '#6b7280'
+          const label = EVENT_LABELS[event.event_type] || event.event_type
+          const abbrev = EVENT_ABBREVS[event.event_type] || '?'
+          const isHovered = hoveredEvent === event.id
+
+          return (
+            <g
+              key={event.id}
+              className="cursor-pointer"
+              onClick={() => onEventClick(event)}
+              onMouseEnter={() => setHoveredEvent(event.id)}
+              onMouseLeave={() => setHoveredEvent(null)}
+            >
+              <circle
+                cx={x} cy={MAIN_Y} r={NODE_R + 4}
+                fill="none"
+                stroke={eventColor}
+                strokeWidth={isHovered ? 1.5 : 0.5}
+                opacity={isHovered ? 0.5 : 0.1}
+                style={{ transition: 'all 0.15s ease' }}
+              />
+              <circle
+                cx={x} cy={MAIN_Y} r={NODE_R}
+                fill={eventColor}
+                opacity={isHovered ? 1 : 0.8}
+                filter={isHovered ? 'url(#node-glow)' : undefined}
+                style={{ transition: 'opacity 0.15s' }}
+              />
+              <text
+                x={x} y={MAIN_Y + 4}
+                fill="white"
+                fontSize={abbrev.length > 1 ? 8 : 9}
+                fontWeight={600}
+                fontFamily="'Inter', system-ui, sans-serif"
+                textAnchor="middle"
+                style={{ pointerEvents: 'none' }}
+              >
+                {abbrev}
+              </text>
+              <text
+                x={x} y={MAIN_Y + NODE_R + 18}
+                fill={isHovered ? '#e8eaed' : '#6b7280'}
+                fontSize={10}
+                fontFamily="'Inter', system-ui, sans-serif"
+                textAnchor="middle"
+                style={{ transition: 'fill 0.15s' }}
+              >
+                {label}
+              </text>
+            </g>
+          )
+        })}
+
+        {/* ── Feature branches ── */}
+        {laneAssignments.map(({ branch, lane, forkCol, mergeCol, firstCol, lastCol }) => {
+          const branchY = laneToY(lane)
           const color = STATE_COLORS[branch.state] || STATE_COLORS.pending
           const isActive = branch.state === 'active'
           const isMerged = branch.state === 'merged'
-          const lastEventX = forkX + Math.max(branch.events.length, 1) * NODE_SPACING_X
           const branchHovered = hoveredBranch === branch.name
           const lineOpacity = branchHovered ? 0.7 : 0.35
+          const isDashed = branch.state === 'awaiting_approval' || branch.state === 'needs_action'
+
+          const forkX = colToX(forkCol)
+          const firstX = colToX(firstCol)
+          const lastX = colToX(lastCol)
+          const mergeX = mergeCol >= 0 ? colToX(mergeCol) + 45 : 0
 
           return (
             <g
@@ -162,31 +365,31 @@ export function GitGraph({ branches, onEventClick }: {
             >
               {/* Fork curve: main → branch */}
               <path
-                d={`M ${forkX} ${MAIN_Y} C ${forkX} ${MAIN_Y + (branchY - MAIN_Y) * 0.5}, ${forkX} ${branchY - (branchY - MAIN_Y) * 0.3}, ${forkX} ${branchY}`}
+                d={`M ${forkX} ${MAIN_Y} C ${forkX} ${MAIN_Y + (branchY - MAIN_Y) * 0.5}, ${firstX} ${branchY - (branchY - MAIN_Y) * 0.3}, ${firstX} ${branchY}`}
                 fill="none"
                 stroke={color}
                 strokeWidth={2}
                 opacity={lineOpacity}
-                strokeDasharray={branch.state === 'awaiting_approval' || branch.state === 'needs_action' ? '6 4' : undefined}
+                strokeDasharray={isDashed ? '6 4' : undefined}
                 filter={branchHovered ? 'url(#line-glow)' : undefined}
                 style={{ transition: 'opacity 0.2s' }}
               />
 
               {/* Branch horizontal line */}
               <line
-                x1={forkX} y1={branchY}
-                x2={lastEventX + 20} y2={branchY}
+                x1={firstX} y1={branchY}
+                x2={lastX + 20} y2={branchY}
                 stroke={color}
                 strokeWidth={2}
                 opacity={lineOpacity}
-                strokeDasharray={branch.state === 'awaiting_approval' || branch.state === 'needs_action' ? '6 4' : undefined}
+                strokeDasharray={isDashed ? '6 4' : undefined}
                 style={{ transition: 'opacity 0.2s' }}
               />
 
               {/* Merge curve: branch → main */}
               {isMerged && (
                 <path
-                  d={`M ${lastEventX} ${branchY} C ${lastEventX + 25} ${branchY - (branchY - MAIN_Y) * 0.3}, ${lastEventX + 35} ${MAIN_Y + (branchY - MAIN_Y) * 0.3}, ${lastEventX + 45} ${MAIN_Y}`}
+                  d={`M ${lastX} ${branchY} C ${lastX + 25} ${branchY - (branchY - MAIN_Y) * 0.3}, ${mergeX - 10} ${MAIN_Y + (branchY - MAIN_Y) * 0.3}, ${mergeX} ${MAIN_Y}`}
                   fill="none"
                   stroke={color}
                   strokeWidth={2}
@@ -197,16 +400,16 @@ export function GitGraph({ branches, onEventClick }: {
               )}
 
               {/* Fork dot on main line */}
-              <circle cx={forkX} cy={MAIN_Y} r={MAIN_NODE_R} fill={color} opacity={0.7} />
+              <circle cx={forkX} cy={MAIN_Y} r={FORK_DOT_R} fill={color} opacity={0.7} />
 
               {/* Merge dot on main line */}
               {isMerged && (
-                <circle cx={lastEventX + 45} cy={MAIN_Y} r={MAIN_NODE_R} fill={color} opacity={0.7} />
+                <circle cx={mergeX} cy={MAIN_Y} r={FORK_DOT_R} fill={color} opacity={0.7} />
               )}
 
               {/* Branch label */}
               <text
-                x={forkX + 8}
+                x={firstX + 8}
                 y={branchY - 24}
                 fill={color}
                 fontSize={11}
@@ -220,7 +423,7 @@ export function GitGraph({ branches, onEventClick }: {
 
               {/* State label */}
               <text
-                x={forkX + 8}
+                x={firstX + 8}
                 y={branchY + 30}
                 fill={color}
                 fontSize={9}
@@ -235,11 +438,11 @@ export function GitGraph({ branches, onEventClick }: {
               {/* Active pulse ring */}
               {isActive && (
                 <>
-                  <circle cx={forkX} cy={branchY} r={20} fill="none" stroke={color} strokeWidth={1} opacity={0.2}>
+                  <circle cx={firstX} cy={branchY} r={20} fill="none" stroke={color} strokeWidth={1} opacity={0.2}>
                     <animate attributeName="r" values="14;28;14" dur="2.5s" repeatCount="indefinite" />
                     <animate attributeName="opacity" values="0.3;0.05;0.3" dur="2.5s" repeatCount="indefinite" />
                   </circle>
-                  <circle cx={forkX} cy={branchY} r={14} fill="none" stroke={color} strokeWidth={1} opacity={0.15}>
+                  <circle cx={firstX} cy={branchY} r={14} fill="none" stroke={color} strokeWidth={1} opacity={0.15}>
                     <animate attributeName="r" values="14;22;14" dur="2.5s" begin="0.4s" repeatCount="indefinite" />
                     <animate attributeName="opacity" values="0.25;0.05;0.25" dur="2.5s" begin="0.4s" repeatCount="indefinite" />
                   </circle>
@@ -247,8 +450,9 @@ export function GitGraph({ branches, onEventClick }: {
               )}
 
               {/* Event nodes */}
-              {branch.events.map((event, ei) => {
-                const x = forkX + (ei + 1) * NODE_SPACING_X
+              {branch.events.map((event) => {
+                const col = eventColMap.get(event.id) ?? 0
+                const x = colToX(col)
                 const y = branchY
                 const eventColor = EVENT_COLORS[event.event_type] || color
                 const label = EVENT_LABELS[event.event_type] || event.event_type
@@ -263,7 +467,6 @@ export function GitGraph({ branches, onEventClick }: {
                     onMouseEnter={() => setHoveredEvent(event.id)}
                     onMouseLeave={() => setHoveredEvent(null)}
                   >
-                    {/* Outer glow ring */}
                     <circle
                       cx={x} cy={y} r={NODE_R + 4}
                       fill="none"
@@ -272,8 +475,6 @@ export function GitGraph({ branches, onEventClick }: {
                       opacity={isHovered ? 0.5 : 0.1}
                       style={{ transition: 'all 0.15s ease' }}
                     />
-
-                    {/* Main node */}
                     <circle
                       cx={x} cy={y} r={NODE_R}
                       fill={eventColor}
@@ -281,8 +482,6 @@ export function GitGraph({ branches, onEventClick }: {
                       filter={isHovered ? 'url(#node-glow)' : undefined}
                       style={{ transition: 'opacity 0.15s' }}
                     />
-
-                    {/* Inner abbreviation */}
                     <text
                       x={x} y={y + 4}
                       fill="white"
@@ -294,8 +493,6 @@ export function GitGraph({ branches, onEventClick }: {
                     >
                       {abbrev}
                     </text>
-
-                    {/* Label below */}
                     <text
                       x={x} y={y + NODE_R + 18}
                       fill={isHovered ? '#e8eaed' : '#6b7280'}
