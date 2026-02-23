@@ -263,7 +263,7 @@ export async function autoMergePR(
       await supabase.from('proposals')
         .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'HEAD SHA changed after review' })
         .eq('id', payload.proposal_id)
-      await notifySlack(`Merge aborted PR #${payload.pr_number} — SHA changed after review`)
+      await notifySlack(`⚠️ *Merge aborted* <https://github.com/${repo}/pull/${payload.pr_number}|PR #${payload.pr_number}> — SHA changed after review`)
       await checkCycleCompletion(supabase, projectId, payload.proposal_id)
       return
     }
@@ -291,7 +291,7 @@ export async function autoMergePR(
       await supabase.from('proposals')
         .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: `Merge failed: ${msg.slice(0, 200)}` })
         .eq('id', payload.proposal_id)
-      await notifySlack(`Merge failed PR #${payload.pr_number}: ${msg.slice(0, 100)}`)
+      await notifySlack(`❌ *Merge failed* <https://github.com/${repo}/pull/${payload.pr_number}|PR #${payload.pr_number}>: ${msg.slice(0, 100)}`)
       await checkCycleCompletion(supabase, projectId, payload.proposal_id)
       return
     }
@@ -361,7 +361,7 @@ export async function autoMergePR(
     }
 
     console.log(`[autonomy] Auto-merged PR #${payload.pr_number} (${mergeSha.slice(0, 7)})`)
-    await notifySlack(`Merged PR #${payload.pr_number} into main (${mergeSha.slice(0, 7)})`)
+    await notifySlack(`🎉 *Merged* <https://github.com/${repo}/pull/${payload.pr_number}|PR #${payload.pr_number}> into main\nCommit: \`${mergeSha.slice(0, 7)}\` · <https://github.com/${repo}/commit/${mergeSha}|View>`)
 
     // Check if the cycle is now complete
     await checkCycleCompletion(supabase, projectId, payload.proposal_id)
@@ -479,7 +479,7 @@ export async function checkCycleCompletion(
       })
 
       console.log(`[autonomy] Re-triggered scout for next cycle`)
-      await notifySlack(`Cycle complete — all proposals resolved. Starting new scout cycle.`)
+      await notifySlack(`🔄 *Cycle complete* — all proposals resolved. Starting new scout cycle.`)
     } else {
       console.log(`[autonomy] Scout already pending/processing — skipping re-trigger`)
     }

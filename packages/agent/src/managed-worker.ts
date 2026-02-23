@@ -20,6 +20,20 @@ const MAX_BACKOFF_MS = 60_000
 const WORKER_ID = `worker-${process.pid}-${Date.now()}`
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL ?? ''
 
+const DASHBOARD_BASE = 'https://minions-dashboard.vercel.app'
+
+function ghPrLink(repo: string, prNumber: number): string {
+  return `<https://github.com/${repo}/pull/${prNumber}|PR #${prNumber}>`
+}
+
+function ghRepoLink(repo: string): string {
+  return `<https://github.com/${repo}|${repo}>`
+}
+
+function dashboardLink(projectId: string, page = 'kanban'): string {
+  return `<${DASHBOARD_BASE}/projects/${projectId}/${page}|Dashboard>`
+}
+
 /** Fire-and-forget Slack notification for pipeline events. */
 async function notifySlack(message: string): Promise<void> {
   if (!SLACK_WEBHOOK_URL) return
@@ -284,9 +298,11 @@ async function processJob(supabase: Supabase, job: {
 }) {
   console.log(`[${WORKER_ID}] Processing job ${job.id} (type=${job.job_type ?? 'implement'}, ${job.job_type === 'self_improve' ? `source_run=${job.source_run_id}` : `issue #${job.github_issue_number}`})`)
 
-  // Per-project pause check
+  // Fetch project for pause check + GitHub repo (used in Slack links)
+  let ghRepo = ''
   try {
     const project = await fetchProject(supabase, job.project_id)
+    ghRepo = project.github_repo ?? ''
     if (project.paused) {
       console.log(`[${WORKER_ID}] Project ${job.project_id} is paused — releasing job back to pending`)
       await supabase.from('job_queue').update({
@@ -348,7 +364,7 @@ async function processJob(supabase: Supabase, job: {
       })
       // Auto-approve proposals after strategize completes
       await autoApproveAndTriggerBuilds(supabase, job.project_id, strategizeCycleId)
-      await notifySlack(`Strategize complete — proposals auto-approved and queued for build`)
+      await notifySlack(`🧠 *Strategize complete* — proposals auto-approved and queued for build\n${dashboardLink(job.project_id, 'kanban')}`)
     } else if (job.job_type === 'scout') {
       await runScoutJob({
         jobId: job.id,
@@ -360,7 +376,7 @@ async function processJob(supabase: Supabase, job: {
       // Note: source_run_id has FK to pipeline_runs, so we pass cycle_id through issue_body instead
       const cycleId = job.id
       console.log(`[${WORKER_ID}] Scout complete, auto-triggering strategize for project ${job.project_id} (cycle ${cycleId.slice(0, 8)})`)
-      await notifySlack(`Scout complete — triggering strategize (cycle ${cycleId.slice(0, 8)})`)
+      await notifySlack(`🔭 *Scout complete* — triggering strategize\n${ghRepo ? ghRepoLink(ghRepo) + ' · ' : ''}${dashboardLink(job.project_id, 'findings')}`)
       await supabase.from('job_queue').insert({
         project_id: job.project_id,
         github_issue_number: 0,
@@ -393,7 +409,7 @@ async function processJob(supabase: Supabase, job: {
         actor: 'builder',
       })
 
-      await notifySlack(`Build started: "${payload.title || job.issue_title}" → branch ${payload.branch_name}`)
+      await notifySlack(`🔨 *Build started*\n> _${payload.title || job.issue_title}_\nBranch: \`${payload.branch_name}\`${ghRepo ? ' · ' + ghRepoLink(ghRepo) : ''}`)
 
       const result = await runBuilderJob({
         jobId: job.id,
@@ -431,7 +447,7 @@ async function processJob(supabase: Supabase, job: {
       } else {
         // Builder produced no changes — reject proposal and move on
         console.log(`[${WORKER_ID}] Build produced no changes — rejecting proposal ${payload.proposal_id}`)
-        await notifySlack(`Build produced no changes for "${payload.title || job.issue_title}" — proposal rejected`)
+        await notifySlack(`⚠️ *Build produced no changes* — proposal rejected\n> _${payload.title || job.issue_title}_\n${dashboardLink(job.project_id, 'kanban')}`)
 
         await supabase.from('proposals')
           .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Builder produced no code changes' })
@@ -480,7 +496,7 @@ async function processJob(supabase: Supabase, job: {
         // Try auto-merge if in automate mode
         if (await shouldAutoMerge(supabase, job.project_id)) {
           console.log(`[${WORKER_ID}] Review approved — attempting auto-merge for PR #${payload.pr_number}`)
-          await notifySlack(`Review approved — auto-merging PR #${payload.pr_number}`)
+          await notifySlack(`✅ *Review approved* — auto-merging ${ghRepo ? ghPrLink(ghRepo, payload.pr_number!) : `PR #${payload.pr_number}`}`)
           await autoMergePR(supabase, job.project_id, {
             proposal_id: payload.proposal_id!,
             pr_number: payload.pr_number!,
@@ -516,7 +532,7 @@ async function processJob(supabase: Supabase, job: {
         if (attempt < 1) {
           // First rejection → queue fix-build to address reviewer concerns
           console.log(`[${WORKER_ID}] Review rejected — queuing fix-build for PR #${payload.pr_number} (attempt ${attempt + 1})`)
-          await notifySlack(`Review rejected PR #${payload.pr_number} — spawning fix-build to address concerns`)
+          await notifySlack(`🔧 *Review rejected* ${ghRepo ? ghPrLink(ghRepo, payload.pr_number!) : `PR #${payload.pr_number}`} — spawning fix-build\n${reviewResult.summary ? `> ${reviewResult.summary.slice(0, 200)}` : ''}`)
 
           await supabase.from('branch_events').insert({
             project_id: job.project_id,
@@ -551,7 +567,7 @@ async function processJob(supabase: Supabase, job: {
         } else {
           // Already retried — reject permanently
           console.log(`[${WORKER_ID}] Review rejected after fix attempt — permanently rejecting proposal ${payload.proposal_id}`)
-          await notifySlack(`Review rejected PR #${payload.pr_number} after fix attempt — proposal permanently rejected`)
+          await notifySlack(`❌ *Permanently rejected* ${ghRepo ? ghPrLink(ghRepo, payload.pr_number!) : `PR #${payload.pr_number}`} — fix attempt failed\n${dashboardLink(job.project_id, 'kanban')}`)
 
           await supabase.from('proposals')
             .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Reviewer requested changes (fix attempt failed)' })
@@ -581,7 +597,7 @@ async function processJob(supabase: Supabase, job: {
         throw new Error('Fix-build job missing required payload fields')
       }
 
-      await notifySlack(`Fix-build started: addressing review on PR #${fixPayload.pr_number}`)
+      await notifySlack(`🔧 *Fix-build started* — addressing review on ${ghRepo ? ghPrLink(ghRepo, fixPayload.pr_number) : `PR #${fixPayload.pr_number}`}\n${(fixPayload.review_concerns || []).length} concern${(fixPayload.review_concerns || []).length !== 1 ? 's' : ''} to fix`)
 
       const result = await runFixBuildJob({
         jobId: job.id,
@@ -614,7 +630,7 @@ async function processJob(supabase: Supabase, job: {
       } else {
         // Fix produced no changes — reject proposal
         console.log(`[${WORKER_ID}] Fix-build produced no changes — rejecting proposal`)
-        await notifySlack(`Fix-build produced no changes for PR #${fixPayload.pr_number} — proposal rejected`)
+        await notifySlack(`⚠️ *Fix-build produced no changes* ${ghRepo ? ghPrLink(ghRepo, fixPayload.pr_number) : `PR #${fixPayload.pr_number}`} — proposal rejected\n${dashboardLink(job.project_id, 'kanban')}`)
         await supabase.from('proposals')
           .update({ status: 'rejected', completed_at: new Date().toISOString(), reject_reason: 'Fix-build produced no changes after review rejection' })
           .eq('id', fixPayload.proposal_id)

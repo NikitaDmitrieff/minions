@@ -325,22 +325,32 @@ function queueDigestEvent(event: string): void {
   digestEvents.push(`${timestamp} — ${event}`)
 }
 
+const DASHBOARD_BASE = 'https://minions-dashboard.vercel.app'
+
 async function sendDigest(): Promise<void> {
   const now = Date.now()
 
-  // Query current state
-  const [{ data: jobs }, { data: proposals }] = await Promise.all([
+  // Query current state + project info for links
+  const [{ data: jobs }, { data: proposals }, { data: projects }] = await Promise.all([
     supabase.from('job_queue')
-      .select('id, job_type, status')
+      .select('id, job_type, status, project_id')
       .in('status', ['pending', 'processing', 'done', 'failed'])
       .order('created_at', { ascending: false })
       .limit(20),
     supabase.from('proposals')
-      .select('id, title, status')
+      .select('id, title, status, project_id')
       .in('status', ['approved', 'implementing', 'done', 'rejected'])
       .order('created_at', { ascending: false })
       .limit(10),
+    supabase.from('projects')
+      .select('id, name, github_repo')
+      .eq('paused', false)
+      .limit(5),
   ])
+
+  const project = projects?.[0]
+  const ghRepo = project?.github_repo ?? ''
+  const projectId = project?.id ?? ''
 
   const processing = jobs?.filter(j => j.status === 'processing') ?? []
   const pending = jobs?.filter(j => j.status === 'pending') ?? []
@@ -353,18 +363,32 @@ async function sendDigest(): Promise<void> {
     idle: '💤', scout: '🔭', strategize: '🧠', 'strategize-pending': '🧠',
     build: '🔨', review: '🔍', fix_build: '🔧',
   }
+
   const lines: string[] = [
-    `🔄 *Minions Digest*`,
+    `🔄 *Minions Digest*${project ? ` — ${project.name}` : ''}`,
     `━━━━━━━━━━━━━━━━━━━━━`,
-    `${stageEmoji[pipelineStage] ?? '❓'} Current stage: *${pipelineStage}*${pipelineDetail ? ` — ${pipelineDetail}` : ''}`,
+    `${stageEmoji[pipelineStage] ?? '❓'} *${pipelineStage}*${pipelineDetail ? ` — ${pipelineDetail}` : ''}`,
   ]
 
-  if (merged.length > 0) lines.push(`✅ Merged: ${merged.map(p => `"${p.title}"`).join(', ')}`)
-  if (building.length > 0) lines.push(`🔨 Building: ${building.map(p => `"${p.title}"`).join(', ')}`)
-  if (pending.length > 0) lines.push(`⏳ Queued: ${pending.length} job${pending.length > 1 ? 's' : ''}`)
-  if (failed.length > 0) lines.push(`❌ Failed: ${failed.length} job${failed.length > 1 ? 's' : ''}`)
-  if (processing.length > 0) lines.push(`⚙️ Processing: ${processing.map(j => j.job_type).join(', ')}`)
-  lines.push(`🏥 Worker uptime: ${uptimeMin}min, restarts: ${restartCount}`)
+  if (merged.length > 0) {
+    lines.push(``)
+    lines.push(`✅ *Recently merged:*`)
+    for (const p of merged.slice(0, 3)) lines.push(`  • _${p.title}_`)
+  }
+  if (building.length > 0) {
+    lines.push(``)
+    lines.push(`🔨 *In progress:*`)
+    for (const p of building) lines.push(`  • _${p.title}_`)
+  }
+  if (pending.length > 0 || failed.length > 0 || processing.length > 0) {
+    lines.push(``)
+    if (processing.length > 0) lines.push(`⚙️ Processing: ${processing.map(j => j.job_type).join(', ')}`)
+    if (pending.length > 0) lines.push(`⏳ Queued: ${pending.length} job${pending.length > 1 ? 's' : ''}`)
+    if (failed.length > 0) lines.push(`❌ Failed: ${failed.length} job${failed.length > 1 ? 's' : ''}`)
+  }
+
+  lines.push(``)
+  lines.push(`🏥 Uptime: ${uptimeMin}min · Restarts: ${restartCount}`)
 
   if (digestEvents.length > 0) {
     lines.push(``, `📋 *Events since last digest:*`)
@@ -372,9 +396,16 @@ async function sendDigest(): Promise<void> {
     digestEvents.length = 0
   }
 
-  if (lines.length <= 3) {
+  if (merged.length === 0 && building.length === 0 && processing.length === 0 && pending.length === 0) {
     lines.push(`💤 Pipeline idle — nothing in progress`)
   }
+
+  // Add quick links
+  const links: string[] = []
+  if (projectId) links.push(`<${DASHBOARD_BASE}/projects/${projectId}/kanban|Kanban>`)
+  if (projectId) links.push(`<${DASHBOARD_BASE}/projects/${projectId}|Graph>`)
+  if (ghRepo) links.push(`<https://github.com/${ghRepo}/pulls|PRs>`)
+  if (links.length > 0) lines.push(``, links.join(' · '))
 
   await sendSlack(lines.join('\n'))
   lastDigestAt = now
