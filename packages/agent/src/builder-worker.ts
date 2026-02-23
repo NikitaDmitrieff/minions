@@ -127,12 +127,22 @@ export async function runBuilderJob(input: BuilderInput): Promise<{
       { cwd: '/tmp', timeout: STEP_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
     )
 
-    // Strip CLAUDE.md to prevent prompt injection from consumer repos
+    // Replace CLAUDE.md with builder instructions (prevents prompt injection + guides skills)
     const claudeMdPath = join(workDir, 'CLAUDE.md')
-    if (existsSync(claudeMdPath)) {
-      unlinkSync(claudeMdPath)
-      await logger.event('text', 'Stripped CLAUDE.md for sandbox safety')
-    }
+    writeFileSync(claudeMdPath, `# Builder Agent Instructions
+
+## CRITICAL: You are running in HEADLESS mode. There is NO human to interact with.
+
+- NEVER use the brainstorming skill — skip it entirely
+- NEVER call AskUserQuestion — there is no one to answer
+- NEVER present designs or options for approval — just implement
+- NEVER use EnterPlanMode — go straight to writing code
+- DO use implementation skills (frontend-design, TDD, writing-plans) if they help
+- DO be creative and bold with the implementation — the spec is your guide
+- Start writing code IMMEDIATELY after reading the codebase
+- Your output is judged by what you SHIP, not what you plan
+`)
+    await logger.event('text', 'Wrote builder CLAUDE.md (headless mode instructions)')
 
     await logger.event('text', 'Installing dependencies...')
     run('npm ci', workDir)

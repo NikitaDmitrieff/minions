@@ -162,6 +162,23 @@ export async function runJob(input: JobInput, logger?: DbLogger): Promise<{ succ
     )
     await logger?.event('text', 'Clone complete')
 
+    // Replace CLAUDE.md with headless builder instructions (prevents brainstorming skill blocking)
+    const claudeMdPath = join(workDir, 'CLAUDE.md')
+    writeFileSync(claudeMdPath, `# Builder Agent Instructions
+
+## CRITICAL: You are running in HEADLESS mode. There is NO human to interact with.
+
+- NEVER use the brainstorming skill — skip it entirely
+- NEVER call AskUserQuestion — there is no one to answer
+- NEVER present designs or options for approval — just implement
+- NEVER use EnterPlanMode — go straight to writing code
+- DO use implementation skills (frontend-design, TDD, writing-plans) if they help
+- DO be creative and bold with the implementation — the spec is your guide
+- Start writing code IMMEDIATELY after reading the codebase
+- Your output is judged by what you SHIP, not what you plan
+`)
+    await logger?.event('text', 'Wrote builder CLAUDE.md (headless mode)')
+
     await logger?.event('text', `Installing dependencies (${config.installCommand})...`)
     run(config.installCommand, workDir)
     await logger?.event('text', 'Dependencies installed')
