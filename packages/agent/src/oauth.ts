@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createSupabaseClient } from './supabase.js'
@@ -20,15 +20,38 @@ interface OAuthCredentials {
 }
 
 const credsPath = join(homedir(), '.claude', '.credentials.json')
+const claudeJsonPath = join(homedir(), '.claude.json')
 
 /**
  * Initialize credentials at startup.
- * Priority: 1) Supabase system row (survives restarts), 2) CLAUDE_CREDENTIALS_JSON env var (initial seed)
+ * Priority:
+ *   1) ~/.claude.json (from `claude auth login` on persistent volume — auto-refreshed by CLI)
+ *   2) Supabase system row (survives restarts)
+ *   3) CLAUDE_CREDENTIALS_JSON env var (initial seed / fallback)
  */
 export async function initCredentials(): Promise<boolean> {
   mkdirSync(join(homedir(), '.claude'), { recursive: true })
 
-  // Try Supabase first — this has the latest refreshed tokens
+  // 1) Check ~/.claude.json — written by `claude auth login` on persistent volume.
+  //    Claude CLI auto-refreshes tokens here (~1 year refresh token).
+  if (existsSync(claudeJsonPath)) {
+    try {
+      const raw = readFileSync(claudeJsonPath, 'utf-8')
+      const parsed = JSON.parse(raw)
+      if (parsed.claudeAiOauth?.accessToken && parsed.claudeAiOauth?.refreshToken) {
+        const creds: OAuthCredentials = { claudeAiOauth: parsed.claudeAiOauth }
+        const json = JSON.stringify(creds)
+        writeFileSync(credsPath, json)
+        console.log('[oauth] Loaded credentials from ~/.claude.json (persistent volume)')
+        await persistToSupabase(json)
+        return true
+      }
+    } catch {
+      // Malformed or missing OAuth section — fall through
+    }
+  }
+
+  // 2) Try Supabase — this has the latest refreshed tokens
   try {
     const supabase = createSupabaseClient()
     const { data } = await supabase
@@ -46,7 +69,7 @@ export async function initCredentials(): Promise<boolean> {
     // Table might not exist yet or DB unreachable — fall through to env var
   }
 
-  // Fall back to env var (initial seed or manual update)
+  // 3) Fall back to env var (initial seed or manual update)
   const credsJson = process.env.CLAUDE_CREDENTIALS_JSON
   if (!credsJson) return false
 
